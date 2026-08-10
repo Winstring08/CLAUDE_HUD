@@ -23,7 +23,7 @@ from .formatting import (
     format_countdown,
 )
 from .models import HudState, Status
-from .winmetrics import dpi_scale, round_window_corners
+from .winmetrics import dpi_scale, round_window_corners, work_area
 
 # 폭 190은 눈대중이 아니라 역산이다. 화면에 나갈 수 있는 모든 문구를 재서
 # 가장 긴 것이 카운트다운 "10시간 14분 후 리셋"이고, **Pretendard가 없는 PC의
@@ -135,7 +135,7 @@ class Overlay:
         self._win.attributes("-alpha", ALPHA)     # 반투명
         self._win.configure(bg=theme.BG)
 
-        x, y = self._initial_position(root)
+        x, y = self._initial_position()
         self._win.geometry(f"{self._w}x{self._h}+{x}+{y}")
 
         self._canvas = tk.Canvas(
@@ -210,14 +210,22 @@ class Overlay:
 
     # --- 위치 ------------------------------------------------------------
 
-    def _initial_position(self, root: tk.Tk) -> tuple[int, int]:
-        """언제나 화면 오른쪽 위. 옮겨둔 자리를 기억하지 않는다.
+    def _initial_position(self) -> tuple[int, int]:
+        """언제나 화면 오른쪽 **아래**. 옮겨둔 자리를 기억하지 않는다.
+
+        오른쪽 위는 창의 닫기 단추와 브라우저 탭이 몰려 있어 사용자가 자주
+        건드리는 자리다. 항상 위에 떠 있는 창을 거기 두면 클릭을 가로챈다.
+        오른쪽 아래는 트레이 아이콘과도 가까워 눈이 오가기 쉽다.
+
+        화면 크기가 아니라 **작업 영역**을 기준으로 잡는다. 화면 크기에는
+        작업 표시줄이 포함돼 있어서, 그걸로 아래쪽에 붙이면 표시줄 뒤로 숨는다.
 
         드래그는 그 세션 동안만 유지된다. 늘 같은 자리에서 시작하는 편이
         어디를 봐야 할지 헷갈리지 않고, 저장된 좌표가 지금 없는 모니터를
         가리켜 창을 못 찾는 사고도 애초에 생기지 않는다.
         """
-        return root.winfo_screenwidth() - self._w - MARGIN, MARGIN
+        _left, _top, right, bottom = work_area()
+        return right - self._w - MARGIN, bottom - self._h - MARGIN
 
     # --- 드래그 이동 ------------------------------------------------------
 

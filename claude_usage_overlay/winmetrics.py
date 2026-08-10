@@ -10,6 +10,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 SM_CXSMICON = 49
+SPI_GETWORKAREA = 0x0030
 
 DEFAULT_ICON_SIZE = 16
 
@@ -94,6 +95,31 @@ def system_icon_size() -> int:
     """배율 100%에서 16, 125%에서 20, 150%에서 24를 돌려준다."""
     size = _metric(SM_CXSMICON)
     return size if size > 0 else DEFAULT_ICON_SIZE
+
+
+def work_area() -> tuple[int, int, int, int]:
+    """작업 표시줄을 뺀 화면 영역 (left, top, right, bottom).
+
+    화면 크기(`winfo_screenheight`)를 쓰면 안 된다. 그건 작업 표시줄까지
+    포함한 값이라, 창을 아래쪽에 붙이면 표시줄 뒤로 들어가 버린다.
+    이 값은 표시줄이 아래에 있든 위·옆에 있든, 자동 숨김이든 알아서 맞는다.
+
+    실패하면 주 화면 전체를 돌려준다. 창이 표시줄에 조금 가릴 뿐이고,
+    HUD가 안 뜨는 것보다 낫다.
+    """
+    rect = wintypes.RECT()
+    try:
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            ctypes.c_uint(SPI_GETWORKAREA), 0, ctypes.byref(rect), 0
+        )
+        if ok:
+            return (rect.left, rect.top, rect.right, rect.bottom)
+    except (AttributeError, OSError):
+        pass
+
+    width = _metric(0) or 1920    # SM_CXSCREEN
+    height = _metric(1) or 1080   # SM_CYSCREEN
+    return (0, 0, width, height)
 
 
 def dpi_scale() -> float:

@@ -32,6 +32,23 @@ def test_enable_dpi_awareness_is_safe_to_call():
     winmetrics.enable_dpi_awareness()   # 두 번째 호출은 실패하지만 조용해야 한다
 
 
+def test_work_area_excludes_the_taskbar():
+    """오버레이를 오른쪽 아래에 붙이는 기준이다.
+
+    화면 크기를 쓰면 작업 표시줄 뒤로 창이 숨는다. 작업 영역은 그 표시줄을
+    뺀 값이므로 화면보다 작거나(표시줄이 있으면) 같아야(자동 숨김) 한다.
+    """
+    import ctypes
+
+    left, top, right, bottom = winmetrics.work_area()
+    screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+    screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+
+    assert right > left and bottom > top
+    assert right - left <= screen_w
+    assert bottom - top <= screen_h
+
+
 def test_round_window_corners_never_raises():
     """Overlay.__init__에서 불린다. 여기서 죽으면 HUD가 아예 안 뜬다.
 
