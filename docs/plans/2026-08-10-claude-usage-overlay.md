@@ -52,7 +52,7 @@ tests/
   test_models.py        test_http_client.py   test_config.py
   test_theme.py         test_formatting.py    test_credentials.py
   test_usage_client.py  test_poller.py        test_winmetrics.py
-  test_icon_render.py   test_autostart.py
+  test_icon_render.py   test_autostart.py     test_tray.py
 pyproject.toml
 ```
 
@@ -404,6 +404,8 @@ git commit -m "feat: urllib 기반 HTTP 어댑터 추가"
 
 설정 파일이 없거나 깨져 있으면 **예외를 던지지 않고 기본값을 쓴다.** 설정 하나 때문에 HUD 전체가 안 뜨면 안 된다.
 
+**"깨져 있으면"에는 값의 타입이 틀린 것도 포함된다.** 이 파일은 트레이 메뉴 "설정 파일 열기"로 사용자가 메모장으로 직접 고치는 파일이고, `pythonw`에는 콘솔이 없어서 예외를 던지면 원인조차 화면에 남지 않는다. `{"poll_seconds": null}` 하나로 HUD가 아예 안 뜬다. **JSON 파싱만 감싸는 것으로는 부족하고, 필드별로 타입을 강제한 뒤 실패한 값을 버려야 한다.**
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `tests/test_config.py`:
@@ -411,6 +413,7 @@ git commit -m "feat: urllib 기반 HTTP 어댑터 추가"
 ```python
 import json
 
+from claude_usage_overlay import config
 from claude_usage_overlay.config import Config, load_config, save_config
 
 
@@ -450,6 +453,42 @@ def test_poll_seconds_floor_is_enforced(tmp_path):
     p.write_text(json.dumps({"poll_seconds": 5}), encoding="utf-8")
     # 엔드포인트 한도가 측정되지 않았으므로 너무 짧은 값은 120초로 올린다
     assert load_config(p).poll_seconds == 120
+
+
+def test_wrong_types_fall_back_to_defaults(tmp_path):
+    """사용자가 메모장으로 직접 고치는 파일이다. 오타 하나로 HUD가 안 뜨면 안 된다.
+
+    pythonw에는 콘솔이 없어서 여기서 예외가 나면 원인조차 화면에 남지 않는다.
+    """
+    p = tmp_path / "config.json"
+    for broken in ({"poll_seconds": None}, {"poll_seconds": "오분"}, {"x": "왼쪽"}):
+        p.write_text(json.dumps(broken), encoding="utf-8")
+        cfg = load_config(p)
+        assert cfg.poll_seconds == 300
+        assert cfg.x is None
+
+
+def test_a_broken_value_does_not_discard_the_good_ones(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"x": 100, "y": "아래"}), encoding="utf-8")
+    cfg = load_config(p)
+    assert cfg.x == 100
+    assert cfg.y is None
+
+
+def test_overlay_visible_only_accepts_a_real_bool(tmp_path):
+    """bool("false")는 True다. 문자열을 받아주면 설정이 거꾸로 동작한다."""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"overlay_visible": "false"}), encoding="utf-8")
+    assert load_config(p).overlay_visible is True   # 버리고 기본값
+
+    p.write_text(json.dumps({"overlay_visible": False}), encoding="utf-8")
+    assert load_config(p).overlay_visible is False
+
+
+def test_every_config_field_has_a_coercion_rule():
+    """Config에 필드를 추가하고 _TYPES를 안 고치면 그 설정이 조용히 무시된다."""
+    assert set(Config.__dataclass_fields__) == set(config._TYPES)
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
@@ -485,9 +524,45 @@ class Config:
     overlay_visible: bool = True
 
 
+# 필드별 타입 표. Config에 필드를 추가하면 여기도 추가해야 한다 —
+# 안 하면 그 설정이 조용히 무시되므로 테스트가 이 짝을 지킨다.
+_TYPES = {
+    "x": int,
+    "y": int,
+    "poll_seconds": int,
+    "warn_pct": int,
+    "danger_pct": int,
+    "overlay_visible": bool,
+}
+
+
 def config_path() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home())
     return Path(base) / "claude-usage-overlay" / "config.json"
+
+
+def _coerce(raw: dict) -> dict:
+    """읽을 수 없는 값은 조용히 버린다. 그 자리는 기본값이 채운다.
+
+    이 파일은 트레이 메뉴 "설정 파일 열기"로 사용자가 메모장에서 직접 고친다.
+    `{"poll_seconds": null}` 같은 오타 하나에 예외를 던지면 HUD가 아예 안 뜨고,
+    pythonw에는 콘솔이 없어서 사용자는 원인을 볼 방법조차 없다.
+    """
+    clean: dict = {}
+    for key, cast in _TYPES.items():
+        value = raw.get(key)
+        if value is None:
+            continue
+        if cast is bool:
+            # bool("false")는 True다. 진짜 bool만 받는다.
+            if isinstance(value, bool):
+                clean[key] = value
+            continue
+        try:
+            clean[key] = cast(value)
+        except (TypeError, ValueError):
+            continue
+    return clean
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -499,9 +574,8 @@ def load_config(path: Path | None = None) -> Config:
     except (OSError, json.JSONDecodeError):
         raw = {}
 
-    known = {f for f in Config.__dataclass_fields__}
-    cfg = Config(**{k: v for k, v in raw.items() if k in known})
-    cfg.poll_seconds = max(MIN_POLL_SECONDS, int(cfg.poll_seconds))
+    cfg = Config(**_coerce(raw))
+    cfg.poll_seconds = max(MIN_POLL_SECONDS, cfg.poll_seconds)
     return cfg
 
 
@@ -516,7 +590,7 @@ def save_config(cfg: Config, path: Path | None = None) -> None:
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_config.py -v`
-Expected: PASS (5 passed)
+Expected: PASS (9 passed)
 
 - [ ] **Step 5: 커밋**
 
@@ -538,7 +612,7 @@ git commit -m "feat: 설정 로드/저장 추가"
 **Interfaces:**
 - Consumes: 없음
 - Produces:
-  - `theme.GREEN`, `theme.YELLOW`, `theme.RED`, `theme.GREY`, `theme.BG`, `theme.TEXT_LIGHT`, `theme.TEXT_DARK` (모두 `str`, `#rrggbb`)
+  - `theme.GREEN`, `theme.YELLOW`, `theme.RED`, `theme.GREY`, `theme.BG`, `theme.TEXT_LIGHT`, `theme.TEXT_DARK`, `theme.TEXT_DIM` (모두 `str`, `#rrggbb`)
   - `theme.color_for(pct: float, warn: int = 70, danger: int = 90) -> str`
   - `formatting.format_countdown(resets_at: datetime | None, now: datetime) -> str`
   - `formatting.format_age(fetched_at: datetime, now: datetime) -> str`
@@ -638,6 +712,7 @@ GREY = "#4a4a52"
 BG = "#262b36"
 TEXT_LIGHT = "#e8ecf2"
 TEXT_DARK = "#0f1115"
+TEXT_DIM = "#8b8b93"   # 보조 문구와 "아직 값이 없음" 기호
 
 
 def color_for(pct: float, warn: int = 70, danger: int = 90) -> str:
@@ -840,6 +915,19 @@ def test_missing_oauth_key_asks_for_relogin(tmp_path):
         store.get_access_token()
 
 
+def test_oauth_key_that_is_not_an_object_asks_for_relogin(tmp_path):
+    """손상된 파일이 네트워크 오류처럼 보이면 안 된다.
+
+    .get에서 AttributeError가 새어 나가면 폴러의 except Exception이 받아
+    "N분째 갱신 실패"를 띄운다. 사용자는 인터넷을 의심하고 진짜 원인은 못 본다.
+    """
+    p = tmp_path / ".credentials.json"
+    p.write_text(json.dumps({"claudeAiOauth": "손상됨"}), encoding="utf-8")
+    store = CredentialStore(path=p, now_ms=lambda: NOW_MS)
+    with pytest.raises(ReloginRequired):
+        store.get_access_token()
+
+
 def test_missing_refresh_expiry_is_not_treated_as_expired(tmp_path):
     """refreshTokenExpiresAt가 없는 형식이어도 accessToken이 살아 있으면 쓴다."""
     p = tmp_path / ".credentials.json"
@@ -926,20 +1014,24 @@ class CredentialStore:
     # --- 내부 ------------------------------------------------------------
 
     def _read(self) -> dict:
+        # AttributeError까지 잡는 이유: claudeAiOauth 값이 객체가 아니면
+        # (`{"claudeAiOauth": "..."}`) .get에서 AttributeError가 난다. 이걸
+        # 흘리면 폴러의 except Exception이 받아 "N분째 갱신 실패"를 띄운다 —
+        # 파일이 손상됐는데 네트워크 문제처럼 보이고, 사용자가 할 일을 못 찾는다.
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             creds = raw[OAUTH_KEY]
             if not creds.get("accessToken"):
                 raise KeyError("accessToken missing")
             return creds
-        except (OSError, json.JSONDecodeError, KeyError, TypeError) as err:
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as err:
             raise ReloginRequired(f"{RELOGIN_MSG} ({err})") from err
 ```
 
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_credentials.py -v`
-Expected: PASS (9 passed)
+Expected: PASS (10 passed)
 
 - [ ] **Step 5: 커밋**
 
@@ -1070,6 +1162,20 @@ def test_unparseable_resets_at_becomes_none_not_schema_changed():
     assert snap.five_hour_pct == 42.0
 
 
+def test_resets_at_without_an_offset_is_read_as_utc():
+    """오프셋이 빠진 형태로 오면 tz-naive가 된다. 그대로 흘리면 안 된다.
+
+    오버레이는 tz-aware now와 이 값을 매초 뺀다. naive가 섞이면
+    TypeError로 화면이 얼어붙는데, tkinter after 콜백 안이라 스택트레이스도
+    안 남는다. 여기서 UTC로 못박는다.
+    """
+    body = {"five_hour": {"utilization": 42.0, "resets_at": "2026-08-10T05:40:00.564898"}}
+    snap = fetch_usage("tok", request_fn=responder(200, body), now=lambda: NOW)
+    assert snap.resets_at is not None
+    assert snap.resets_at.tzinfo is not None
+    assert (snap.resets_at - NOW).total_seconds() > 0   # tz-aware와 뺄 수 있다
+
+
 def test_sends_required_headers():
     seen = {}
 
@@ -1190,13 +1296,18 @@ def _parse_dt(value) -> datetime | None:
 
     사용률은 멀쩡한데 시각만 못 읽는 상황이므로, 카운트다운만 포기하고
     숫자는 그대로 보여준다.
+
+    읽히더라도 tz-naive면 UTC로 못박는다. 오버레이는 이 값을 tz-aware
+    now와 매초 빼는데, naive가 섞이면 TypeError로 화면이 얼어붙는다.
+    tkinter after 콜백 안이라 스택트레이스도 안 남아 진단이 불가능하다.
     """
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def fetch_usage(
@@ -1261,7 +1372,7 @@ def fetch_usage(
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_usage_client.py -v`
-Expected: PASS (15 passed)
+Expected: PASS (16 passed)
 
 - [ ] **Step 5: 커밋**
 
@@ -1289,6 +1400,10 @@ git commit -m "feat: 사용량 엔드포인트 클라이언트 추가"
 **401은 즉시 포기하지 않는다.** 만료 직전 토큰으로 호출한 순간 Claude Code가 파일을 갱신하는 정상 경합이 있다. `CredentialStore`가 매번 파일을 다시 읽으므로 다음 틱이면 저절로 낫는다. 3회 연속이면 그건 경합이 아니라 인증 문제이므로 `RELOGIN`으로 넘긴다.
 
 **그 재시도는 백오프를 타지 않는다.** 유예의 목적이 빠른 회복인데 지연을 늘리면 목적과 반대로 간다. `_failures`도 올리지 않는다 — 인증 경합이 네트워크 실패 카운터를 오염시키면, 401이 몇 번 스친 뒤의 첫 네트워크 오류가 20분을 기다리게 된다.
+
+**백오프를 타는 것은 네트워크 실패와 `SCHEMA_ERROR`뿐이다.** `RELOGIN`은 백오프하지 않는다 — 자격증명 확인은 로컬 파일 읽기라 비용이 0이고, 늦출수록 사용자가 고쳐놓은 것을 늦게 알아챌 뿐이다. 백오프를 태우면 README가 약속한 "Claude Code를 한 번 실행하면 낫는다"가 **최대 30분 뒤에나** 사실이 된다. 401 재시도에서 백오프를 뺀 이유가 여기에도 그대로 적용된다.
+
+**429는 그 반대로 강제한다.** `request_now()`는 벌칙 구간 동안 아무 일도 하지 않는다. 스펙 8장이 "`retry-after`까지 호출하지 않음"으로 정했고, 트레이 메뉴가 유일한 조작 수단이라 사용자는 답답할 때 "지금 갱신"을 누른다. 그 버튼이 벌칙을 연장하면 안 된다.
 
 **`RELOGIN`의 문구는 `credentials`가 정한다.** 폴러는 예외 메시지를 그대로 화면에 넘긴다 — "Claude Code를 한 번 실행하세요"와 "claude auth login"을 가르는 것은 자격증명 파일의 상태이고, 그건 폴러가 아는 일이 아니다.
 
@@ -1406,6 +1521,30 @@ def test_rate_limited_honors_retry_after():
     assert p.state().status is Status.RATE_LIMITED
 
 
+def test_request_now_is_ignored_during_the_rate_limit_penalty():
+    """스펙 8장은 retry-after까지 호출하지 않기로 했다.
+
+    트레이 메뉴가 유일한 조작 수단이라 사용자는 답답할 때 "지금 갱신"을 누른다.
+    그 버튼이 벌칙 구간을 깨우면 429가 또 나고 벌칙만 길어진다.
+    """
+    p, clock = make(lambda token, **k: (_ for _ in ()).throw(RateLimited(287)))
+    p.step()
+
+    p.request_now()
+    assert not p._wake.is_set()              # 무시됐다
+
+    clock["t"] = NOW + timedelta(seconds=293)   # 벌칙이 끝난 뒤
+    p.request_now()
+    assert p._wake.is_set()
+
+
+def test_request_now_works_when_not_rate_limited():
+    p, _ = make(lambda token, **k: snapshot())
+    p.step()
+    p.request_now()
+    assert p._wake.is_set()
+
+
 def test_unauthorized_retries_before_giving_up():
     """만료 직전 토큰과 Claude Code의 갱신이 겹치는 정상 경합이 있다.
     CredentialStore가 매번 파일을 다시 읽으므로 다음 틱이면 낫는다."""
@@ -1478,6 +1617,36 @@ def test_relogin_message_from_the_store_is_shown_as_is():
     assert state.snapshot is None
 
 
+def test_relogin_does_not_back_off():
+    """자격증명 확인은 로컬 파일 읽기다. 늦출 이유가 없다.
+
+    백오프를 태우면 사용자가 Claude Code를 실행해 고쳐놓은 것을 최대 30분
+    뒤에야 알아챈다. README는 "한 번 실행하면 낫는다"고 약속했다.
+    """
+    store = FakeStore(error=ReloginRequired("토큰 만료 — Claude Code를 한 번 실행하세요"))
+    p, _ = make(lambda token, **k: snapshot(), store=store)
+    assert [p.step() for _ in range(4)] == [300, 300, 300, 300]
+
+
+def test_relogin_after_three_401s_does_not_back_off_either():
+    """401로 도달한 RELOGIN도 같다. 회복 경로가 같으니 지연도 같아야 한다."""
+    p, _ = make(lambda token, **k: (_ for _ in ()).throw(Unauthorized()))
+    assert [p.step() for _ in range(4)] == [300, 300, 300, 300]
+    assert p.state().status is Status.RELOGIN
+
+
+def test_relogin_recovers_on_the_next_tick():
+    """사용자가 Claude Code를 실행하면 다음 틱에 낫는다."""
+    store = FakeStore(error=ReloginRequired("토큰 만료"))
+    p, _ = make(lambda token, **k: snapshot(), store=store)
+    p.step()
+    assert p.state().status is Status.RELOGIN
+
+    store.error = None                       # Claude Code가 파일을 갱신했다
+    p.step()
+    assert p.state().status is Status.OK
+
+
 def test_schema_change_is_reported_not_guessed():
     p, _ = make(lambda token, **k: (_ for _ in ()).throw(SchemaChanged("no five_hour")))
     p.step()
@@ -1506,7 +1675,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'claude_usage_overlay.p
 """
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from .config import Config
@@ -1549,6 +1718,7 @@ class Poller:
         self._last_snapshot: UsageSnapshot | None = None
         self._failures = 0
         self._unauthorized = 0
+        self._blocked_until: datetime | None = None   # 429 벌칙이 끝나는 시각
 
         self._wake = threading.Event()
         self._stopping = threading.Event()
@@ -1566,14 +1736,20 @@ class Poller:
             token = self._store.get_access_token()
             snapshot = self._fetch(token)
         except RateLimited as err:
+            delay = err.retry_after + RATE_LIMIT_PADDING
+            # request_now()가 이 구간을 깨우지 못하게 막는다 (스펙 8장).
+            self._blocked_until = self._now() + timedelta(seconds=delay)
             self._set(Status.RATE_LIMITED, self._last_snapshot, "호출 한도 — 잠시 후 재시도")
-            return err.retry_after + RATE_LIMIT_PADDING
+            return delay
         except Unauthorized:
             return self._handle_unauthorized()
         except ReloginRequired as err:
             # 무엇을 해야 하는지는 credentials가 안다. 문구를 그대로 넘긴다.
             self._set(Status.RELOGIN, None, str(err))
-            return self._backoff()
+            # 백오프를 태우지 않는다. 자격증명 확인은 로컬 파일 읽기라 비용이 0이고,
+            # 늦출수록 사용자가 Claude Code를 실행해 고쳐놓은 것을 늦게 알아챌
+            # 뿐이다. 30분까지 늘리면 README의 "한 번 실행하면 낫는다"가 거짓이 된다.
+            return self._config.poll_seconds
         except SchemaChanged:
             self._set(Status.SCHEMA_ERROR, None, "데이터 형식이 바뀜")
             return self._backoff()
@@ -1595,7 +1771,15 @@ class Poller:
         self._wake.set()
 
     def request_now(self) -> None:
-        """트레이의 '지금 갱신' 메뉴가 호출한다."""
+        """트레이의 '지금 갱신' 메뉴가 호출한다.
+
+        429 벌칙 중에는 아무 일도 하지 않는다. 스펙 8장은 retry-after까지
+        호출하지 않기로 정했고, 트레이 메뉴가 유일한 조작 수단이라 사용자는
+        답답할 때 이 버튼을 누른다. 여기서 깨우면 429가 또 나고 벌칙만 길어진다.
+        화면에는 이미 "호출 한도 — 잠시 후 재시도"가 떠 있다.
+        """
+        if self._blocked_until is not None and self._now() < self._blocked_until:
+            return
         self._wake.set()
 
     # --- 내부 ------------------------------------------------------------
@@ -1625,7 +1809,9 @@ class Poller:
         self._unauthorized += 1
         if self._unauthorized >= MAX_UNAUTHORIZED:
             self._set(Status.RELOGIN, None, "인증 거부됨 — claude auth login")
-            return self._backoff()
+            # 여기서도 백오프하지 않는다. ReloginRequired와 회복 경로가 같으므로
+            # (사용자가 조치하면 다음 틱에 낫는다) 지연도 같아야 한다.
+            return self._config.poll_seconds
 
         self._mark_stale("인증 재시도 중")
         # 백오프를 태우지 않는다. 이 401은 경합이고 회복은 다음 틱에 파일을 다시
@@ -1649,7 +1835,7 @@ class Poller:
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_poller.py -v`
-Expected: PASS (12 passed)
+Expected: PASS (17 passed)
 
 - [ ] **Step 5: 전체 테스트 실행**
 
@@ -1673,16 +1859,19 @@ git commit -m "feat: 백오프와 상태 판정을 담당하는 폴러 추가"
 
 **Interfaces:**
 - Consumes: 없음
-- Produces: `fonts_dir() -> Path`, `system_icon_size() -> int`, `dpi_scale() -> float`,
+- Produces: `enable_dpi_awareness() -> None`, `fonts_dir() -> Path`, `system_icon_size() -> int`, `dpi_scale() -> float`,
   `virtual_screen_rect() -> tuple[int, int, int, int]`,
   `is_position_visible(x: int, y: int, w: int, h: int, rect: tuple[int, int, int, int]) -> bool`,
   상수 `MIN_VISIBLE_W = 40`, `MIN_VISIBLE_H = 20`
 
-이 프로그램은 특정 PC가 아니라 임의의 윈도우 환경에서 돌아야 한다. PC마다 달라지는 값 세 가지를 이 모듈에 가둔다.
+이 프로그램은 특정 PC가 아니라 임의의 윈도우 환경에서 돌아야 한다. PC마다 달라지는 값 네 가지를 이 모듈에 가둔다.
 
 - 윈도우가 C: 아닌 드라이브에 설치돼 있을 수 있다 → `fonts_dir()`
 - 배율이 100%가 아니면 트레이 아이콘은 16px이 아니다 → `system_icon_size()`
 - 저장된 창 위치가 지금 없는 모니터를 가리킬 수 있다 → `is_position_visible()`
+- **tkinter는 기본적으로 DPI 비인식이다** → `enable_dpi_awareness()`
+
+마지막 항목이 없으면 `dpi_scale()`을 곱하는 것이 오히려 해가 된다. DPI 비인식 프로세스의 창은 Windows가 통째로 비트맵 확대하므로, 우리가 치수에 배율을 곱하면 **확대가 두 번 걸려 배율의 제곱만큼 커진다**(150%면 2.25배). `Tk()`를 만들기 전에 이 함수를 부르면 Windows가 확대를 멈추고 우리 곱셈만 남는다.
 
 ctypes로 Windows API를 부르는 부분은 얇게 두고, **판정 로직인 `is_position_visible`만 순수 함수로 빼서 테스트한다.**
 
@@ -1714,6 +1903,15 @@ def test_system_icon_size_is_plausible():
 
 def test_dpi_scale_is_at_least_one():
     assert winmetrics.dpi_scale() >= 1.0
+
+
+def test_enable_dpi_awareness_is_safe_to_call():
+    """이미 설정돼 있거나 API가 없어도 예외를 던지면 안 된다.
+
+    __main__에서 가장 먼저 부르는 함수다. 여기서 죽으면 HUD가 아예 안 뜬다.
+    """
+    winmetrics.enable_dpi_awareness()
+    winmetrics.enable_dpi_awareness()   # 두 번째 호출은 실패하지만 조용해야 한다
 
 
 def test_virtual_screen_rect_has_positive_extent():
@@ -1781,6 +1979,27 @@ MIN_VISIBLE_W = 40
 MIN_VISIBLE_H = 20
 
 
+def enable_dpi_awareness() -> None:
+    """Windows에게 "우리가 배율을 직접 처리한다"고 알린다. Tk()보다 먼저 부른다.
+
+    tkinter는 기본적으로 DPI 비인식이라 Windows가 창을 통째로 비트맵 확대한다.
+    그 상태에서 우리가 치수에 dpi_scale()을 곱하면 확대가 두 번 걸려 창이
+    배율의 제곱만큼 커진다 — 150%에서 2.25배다. 이걸 부르면 Windows가
+    확대를 멈추고 우리 곱셈만 남는다.
+
+    실패해도 조용히 넘어간다. 창이 흐릿하거나 커질 뿐이고, HUD가 안 뜨는 것보다 낫다.
+    """
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)   # Windows 8.1+
+        return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()        # 그 이전
+    except (AttributeError, OSError):
+        pass
+
+
 def fonts_dir() -> Path:
     """윈도우가 C: 아닌 드라이브에 설치돼 있어도 폰트를 찾는다."""
     return Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
@@ -1833,7 +2052,7 @@ def is_position_visible(
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_winmetrics.py -v`
-Expected: PASS (11 passed)
+Expected: PASS (12 passed)
 
 - [ ] **Step 5: 이 PC의 실측값 확인**
 
@@ -1870,9 +2089,13 @@ git commit -m "feat: PC별 화면 지표를 흡수하는 winmetrics 추가"
 - 숫자를 두 번 그린다 — 채운 영역 위에서는 어두운 글자, 빈 영역 위에서는 밝은 글자. 수위선에서 색이 갈린다
 - **100%는 숫자 대신 ✕** (16px 폭에 세 자리는 물리적으로 안 들어간다)
 - 값이 낡았으면 아이콘 전체를 흐리게(알파 45%) — `STALE`과 `RATE_LIMITED` **둘 다**
-- 값이 없으면 회색 배경 — `RELOGIN`은 `!`, `SCHEMA_ERROR`는 `?`
+- 값이 없으면 회색 배경 — `RELOGIN`은 `!`, `SCHEMA_ERROR`는 `?`, **아직 값이 없으면 `…`**
 
 스펙 7장의 여덟 줄이 전부 여기로 온다. 색이 먼저 말하고 기호는 나중이다. 흐림은 "기다리면 낫는다", 회색은 "네가 뭔가 해야 한다"를 뜻한다.
+
+**`…`가 필요한 이유.** 폴러의 초기 상태는 `HudState(STALE, None, "불러오는 중")`이고 첫 조회가 끝나기 전까지 그대로다. `snapshot is None`을 전부 `?`로 그리면 **프로그램을 켤 때마다 몇 초 동안 "데이터 형식이 바뀜" 기호가 뜬다.** 기호는 상태를 가리키는 것이므로 이 자리를 비워두면 구현자가 아니라 사용자가 잘못 읽는다. 그래서 `SCHEMA_ERROR`를 기호로 먼저 가려내고, 남은 "값이 아직 없음"은 `…`로 그린다. 회색 배경 안에서 셋이 구분 부담을 나눈다 — 16px에서 잉크 픽셀이 `?` 24개, `!` 19개, `…` 16개로 서로 확실히 다르다.
+
+이 줄은 스펙 7장 표에 없던 상태다. 스펙에도 같은 행을 추가했다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -1898,6 +2121,11 @@ def state(status, pct=23.0):
 
 ICON = 16  # 테스트는 배율에 흔들리지 않도록 항상 크기를 명시한다
 
+# 채움 영역을 찍는 좌표. y=15가 아니라 y=14인 이유는 라운드 사각형 때문이다 —
+# radius가 3이므로 (1, 15)는 모서리 곡선 **바깥**이고 어떤 상태에서도
+# (0, 0, 0, 0)이다. 거기서 색을 확인하면 무조건 실패한다. (1, 14)는 곡선 안이다.
+FILL_PX = (1, 14)
+
 
 def test_icon_is_requested_size_and_rgba():
     img = render_icon(state(Status.OK), size=ICON)
@@ -1921,7 +2149,7 @@ def test_default_size_follows_system_metric():
 
 def test_low_usage_fills_bottom_with_green():
     img = render_icon(state(Status.OK, 23.0), size=ICON)
-    r, g, b, a = img.getpixel((1, 15))       # 바닥 왼쪽 — 채움 영역
+    r, g, b, a = img.getpixel(FILL_PX)       # 바닥 왼쪽 — 채움 영역
     assert g > r and g > b, "바닥은 초록이어야 한다"
     r2, g2, b2, _ = img.getpixel((1, 1))     # 꼭대기 — 빈 영역
     assert g2 < 120, "꼭대기는 어두운 배경이어야 한다"
@@ -1929,13 +2157,13 @@ def test_low_usage_fills_bottom_with_green():
 
 def test_warn_band_fills_yellow():
     img = render_icon(state(Status.OK, 75.0), size=ICON)
-    r, g, b, _ = img.getpixel((1, 15))
+    r, g, b, _ = img.getpixel(FILL_PX)
     assert r > 200 and g > 150 and b < 150, "주의 구간은 노랑이어야 한다"
 
 
 def test_danger_band_fills_red():
     img = render_icon(state(Status.OK, 95.0), size=ICON)
-    r, g, b, _ = img.getpixel((1, 15))
+    r, g, b, _ = img.getpixel(FILL_PX)
     assert r > 200 and g < 180, "위험 구간은 빨강이어야 한다"
 
 
@@ -1971,20 +2199,34 @@ def test_relogin_uses_grey_background():
 def test_stale_is_dimmed():
     normal = render_icon(state(Status.OK, 23.0), size=ICON)
     stale = render_icon(state(Status.STALE, 23.0), size=ICON)
-    assert stale.getpixel((1, 15))[3] < normal.getpixel((1, 15))[3]
+    assert stale.getpixel(FILL_PX)[3] < normal.getpixel(FILL_PX)[3]
 
 
 def test_rate_limited_is_dimmed_too():
     """호출 한도도 '기다리면 낫는다'이므로 STALE과 같은 흐림을 쓴다."""
     normal = render_icon(state(Status.OK, 23.0), size=ICON)
     limited = render_icon(state(Status.RATE_LIMITED, 23.0), size=ICON)
-    assert limited.getpixel((1, 15))[3] < normal.getpixel((1, 15))[3]
+    assert limited.getpixel(FILL_PX)[3] < normal.getpixel(FILL_PX)[3]
 
 
 def test_schema_error_uses_grey_background():
     img = render_icon(HudState(Status.SCHEMA_ERROR, None, "데이터 형식이 바뀜"), size=ICON)
     assert img.size == (ICON, ICON)
     r, g, b, _ = img.getpixel((8, 3))
+    assert abs(r - g) < 30 and abs(g - b) < 30, "값이 없으면 회색이다"
+
+
+LOADING = HudState(Status.STALE, None, "불러오는 중")   # 폴러의 초기 상태 그대로
+
+
+def test_loading_is_not_drawn_as_a_schema_error():
+    """켤 때마다 몇 초씩 "데이터 형식이 바뀜" 기호가 뜨면 안 된다."""
+    schema = render_icon(HudState(Status.SCHEMA_ERROR, None, "데이터 형식이 바뀜"), size=ICON)
+    assert render_icon(LOADING, size=ICON).tobytes() != schema.tobytes()
+
+
+def test_loading_uses_grey_background():
+    r, g, b, _ = render_icon(LOADING, size=ICON).getpixel((8, 3))
     assert abs(r - g) < 30 and abs(g - b) < 30, "값이 없으면 회색이다"
 ```
 
@@ -2010,6 +2252,7 @@ from .models import HudState, Status
 
 FONT_FILES = ["segoeuib.ttf", "arialbd.ttf"]
 STALE_ALPHA = 115  # 255의 약 45%
+LOADING_TEXT = "…"  # 아직 값이 없음. SCHEMA_ERROR의 "?"와 구분된다
 
 # 값이 낡은 상태. 둘 다 "기다리면 낫는다"이므로 같은 흐림으로 그린다.
 DIM_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
@@ -2078,8 +2321,14 @@ def render_icon(
     if state.status is Status.RELOGIN:
         return _symbol_icon(size, theme.GREY, "!", theme.RED)
 
-    if state.snapshot is None:
+    if state.status is Status.SCHEMA_ERROR:
         return _symbol_icon(size, theme.GREY, "?", theme.TEXT_LIGHT)
+
+    if state.snapshot is None:
+        # 아직 보여줄 값이 없다 — 첫 조회 전이거나 한 번도 성공하지 못했다.
+        # 여기서 "?"를 쓰면 프로그램을 켤 때마다 몇 초 동안 "데이터 형식이
+        # 바뀜" 기호가 뜬다. 폴러의 초기 상태가 (STALE, None)이기 때문이다.
+        return _symbol_icon(size, theme.GREY, LOADING_TEXT, theme.TEXT_DIM)
 
     pct = max(0.0, min(100.0, state.snapshot.five_hour_pct))
     fill_color = theme.color_for(pct, warn, danger)
@@ -2119,9 +2368,19 @@ def render_icon(
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_icon_render.py -v`
-Expected: PASS (12 passed)
+Expected: PASS (14 passed)
 
-픽셀 단언이 실패하면 아래 스크립트로 실제 아이콘을 눈으로 확인한 뒤 좌표를 조정한다. **테스트를 지우지 말고 좌표를 고친다.**
+`FILL_PX = (1, 14)`는 실측으로 고른 좌표다. 16px·23%에서 각 행의 실제 픽셀은 아래와 같고, `fill_top`은 12다.
+
+```
+y=11  (38, 43, 54, 255)     ← 배경
+y=12  (99, 230, 190, 255)   ← 채움 시작
+y=13  (99, 230, 190, 255)
+y=14  (99, 230, 190, 255)   ← FILL_PX
+y=15  (0, 0, 0, 0)          ← 라운드 모서리 바깥. 항상 투명이다
+```
+
+그래도 픽셀 단언이 실패하면 아래 스크립트로 실제 아이콘을 눈으로 확인한 뒤 좌표를 조정한다. **테스트를 지우지 말고 좌표를 고친다.**
 
 ```bash
 python -c "from datetime import datetime,timedelta,timezone; from claude_usage_overlay.icon_render import render_icon; from claude_usage_overlay.models import *; n=datetime.now(timezone.utc); render_icon(HudState(Status.OK, UsageSnapshot(23.0,n+timedelta(hours=2),15.0,n), ''), size=16).resize((160,160), 0).save('icon-preview.png')"
@@ -2297,12 +2556,15 @@ class Overlay:
             # 문구는 credentials가 정한다. "제목 — 할 일" 형태를 두 줄로 나눈다.
             head, _, tail = state.detail.partition(" — ")
             self._draw_ring(0, theme.GREY)
-            self._draw_text(head or "재로그인 필요", theme.RED, tail, "#8b8b93")
+            self._draw_text(head or "재로그인 필요", theme.RED, tail, theme.TEXT_DIM)
             return
 
         if state.snapshot is None:
+            # 첫 조회 전(STALE)과 SCHEMA_ERROR가 모두 여기로 온다. 문구는
+            # 만든 쪽이 정하므로 오버레이는 기호를 고를 필요가 없다 —
+            # 트레이 아이콘만 "…"와 "?"를 구분한다.
             self._draw_ring(0, theme.GREY)
-            self._draw_text(state.detail or "불러오는 중", "#8b8b93", "", "#8b8b93")
+            self._draw_text(state.detail or "불러오는 중", theme.TEXT_DIM, "", theme.TEXT_DIM)
             return
 
         snap = state.snapshot
@@ -2326,7 +2588,7 @@ class Overlay:
         elif state.status is Status.RATE_LIMITED:
             line2, line2_color = "호출 한도 — 잠시 후 재시도", theme.YELLOW
         else:
-            line2, line2_color = format_age(snap.fetched_at, now), "#8b8b93"
+            line2, line2_color = format_age(snap.fetched_at, now), theme.TEXT_DIM
 
         self._draw_text(line1, "#6d7280" if dim else theme.TEXT_LIGHT, line2, line2_color)
 
@@ -2365,6 +2627,9 @@ from datetime import datetime, timedelta, timezone
 from claude_usage_overlay.config import Config
 from claude_usage_overlay.models import HudState, Status, UsageSnapshot
 from claude_usage_overlay.overlay import Overlay
+from claude_usage_overlay.winmetrics import enable_dpi_awareness
+
+enable_dpi_awareness()   # __main__과 같은 순서. 없으면 배율 검증이 무의미하다
 
 root = tk.Tk()
 root.withdraw()
@@ -2422,17 +2687,38 @@ git commit -m "feat: 링 게이지 오버레이 창 추가"
 - Create: `claude_usage_overlay/autostart.py`
 - Create: `claude_usage_overlay/tray.py`
 - Test: `tests/test_autostart.py`
+- Test: `tests/test_tray.py`
 
 **Interfaces:**
 - Consumes: `icon_render.render_icon`, `models.HudState`, `models.Status`, `formatting.*`, `poller.Poller`, `overlay.Overlay`, `config.*`
 - Produces:
-  - `autostart.build_command() -> str`, `autostart.is_enabled() -> bool`, `autostart.enable() -> None`, `autostart.disable() -> None`, 상수 `RUN_KEY`, `VALUE_NAME`
-  - `tray.Tray(poller, overlay, config)`, 메서드 `run() -> None`, `refresh_icon() -> None`, `stop() -> None`
+  - `autostart.package_root() -> Path`, `autostart.build_command() -> str`, `autostart.is_enabled() -> bool`, `autostart.enable() -> None`, `autostart.disable() -> None`, 상수 `RUN_KEY`, `VALUE_NAME`
+  - `tray.icon_key(state: HudState) -> tuple`, `tray.Tray(poller, overlay, config)`, 메서드 `run() -> None`, `refresh_icon() -> None`, `stop() -> None`
 
 **툴팁 내용 (스펙 4장):** 5시간 사용률 · 리셋 카운트다운 · 7일 사용률 · 갱신 시각
 **메뉴 (스펙 4장):** 오버레이 숨기기/보이기 · 지금 갱신 · 시작할 때 자동 실행(체크) · 설정 파일 열기 · 종료
 
+**바뀐 것만 트레이에 밀어 넣는다.** 메인 스레드가 `refresh_icon()`을 1초마다 부르는데, pystray의 Win32 백엔드는 `icon`·`title` 세터마다 HICON을 새로 만들고 `Shell_NotifyIcon`을 호출한다. 무조건 갱신하면 하루 86,400회다. 그림은 `(상태, 반올림한 사용률)`이 바뀔 때만 다시 그리면 되고 — 사용률이 1% 움직이는 데 보통 몇 분 걸린다 — 툴팁은 문자열이 실제로 달라질 때만 밀면 된다. 카운트다운이 분 단위라 실질적으로 분당 한 번이다.
+
+가짜 `Icon`으로 30분치(1,800틱)를 돌려 실측한 결과다. 사용률이 5분에 1%씩 오르는 조건이다.
+
+| | 세터 호출 |
+|---|---|
+| 무조건 갱신 | `icon` 1,800회 · `title` 1,800회 |
+| `icon_key` 비교 후 갱신 | **`icon` 6회 · `title` 7회** |
+
+`icon_key()`를 모듈 함수로 빼는 이유는 이 판정이 `Tray`를 만들지 않고 테스트할 수 있어야 하기 때문이다. `pystray.Icon` 생성에는 트레이가 있는 세션이 필요하다.
+
 **`종료`가 이 프로그램을 끄는 유일한 방법이다.** 오버레이는 무테두리·항상 위 창이라 제목 표시줄도 닫기 단추도 없다.
+
+**명령에 패키지 경로를 박아 넣는다.** 시작 프로그램은 cwd가 저장소가 아니라 대개 `system32`이고, 이 패키지는 어디에도 설치되지 않는다(README는 `pystray`·`pillow`만 설치시킨다). 그래서 `pythonw -m claude_usage_overlay`만으로는 **반드시 실패한다** — 실측:
+
+```
+C:\Users\...> python -m claude_usage_overlay
+python.exe: No module named claude_usage_overlay
+```
+
+게다가 `pythonw`에는 콘솔이 없어서 이 오류가 아무 데도 안 남는다. 사용자는 "자동 실행이 안 켜지네"만 본다. 레지스트리 `Run` 값은 문자열 하나뿐이라 작업 디렉터리를 따로 줄 수 없으므로, `-c`로 `sys.path`를 먼저 세우고 `runpy`로 패키지를 띄운다. 경로는 슬래시로 쓰고 파이썬 문자열은 작은따옴표를 쓴다 — **중첩된 큰따옴표가 하나라도 있으면 `CommandLineToArgvW`가 이 값을 잘못 쪼갠다.**
 
 **레지스트리에 써도 되는 근거는 스펙 9.2장에 있다.** 요약하면, 9장이 막으려던 것은 "쓰기" 자체가 아니라 남이 의존하는 공유 상태를 우리가 회전시키는 것이다. `Run` 키의 `ClaudeUsageOverlay` 값은 우리만 읽고 쓰는 고정 문자열이고, 최악의 결과가 "자동 실행이 안 된다"이며, 메뉴에서 체크를 풀면 되돌아간다. 지킬 선은 둘이다 — `HKCU`만 건드려 관리자 권한을 요구하지 않고, 우리 값 이름 하나만 다룬다(키를 열거하거나 남의 값을 건드리지 않는다).
 
@@ -2446,13 +2732,33 @@ import sys
 from claude_usage_overlay import autostart
 
 
-def test_command_runs_module_with_pythonw(monkeypatch):
+def test_command_runs_the_package_with_pythonw(monkeypatch):
     monkeypatch.setattr(sys, "executable", r"C:\Python312\python.exe")
     cmd = autostart.build_command()
     # 콘솔 창이 뜨지 않도록 pythonw를 쓴다
     assert "pythonw.exe" in cmd
-    assert "-m claude_usage_overlay" in cmd
+    assert "claude_usage_overlay" in cmd
     assert cmd.startswith('"')          # 공백 있는 경로를 위해 따옴표로 감싼다
+
+
+def test_command_carries_the_package_path(monkeypatch):
+    """시작 프로그램은 cwd가 저장소가 아니고 패키지는 설치돼 있지 않다.
+
+    경로가 명령에 들어 있지 않으면 ModuleNotFoundError로 조용히 죽는다 —
+    pythonw에는 콘솔이 없어서 그 오류를 볼 방법도 없다.
+    """
+    monkeypatch.setattr(sys, "executable", r"C:\Python312\python.exe")
+    assert autostart.package_root().as_posix() in autostart.build_command()
+
+
+def test_command_has_no_nested_double_quotes(monkeypatch):
+    """레지스트리 값은 CommandLineToArgvW가 쪼갠다.
+
+    큰따옴표는 exe를 감싸는 둘과 -c 인자를 감싸는 둘, 정확히 넷이어야 한다.
+    파이썬 문자열에 큰따옴표를 쓰면 여기서 깨진다.
+    """
+    monkeypatch.setattr(sys, "executable", r"C:\Python312\python.exe")
+    assert autostart.build_command().count('"') == 4
 
 
 def test_command_handles_already_pythonw(monkeypatch):
@@ -2477,15 +2783,37 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'claude_usage_overlay.a
 
 import sys
 import winreg
+from pathlib import Path
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 VALUE_NAME = "ClaudeUsageOverlay"
 
 
+def package_root() -> Path:
+    """패키지를 담고 있는 디렉터리. sys.path에 이게 있어야 import가 된다."""
+    return Path(__file__).resolve().parent.parent
+
+
 def build_command() -> str:
-    """콘솔 창이 뜨지 않도록 pythonw.exe로 실행한다."""
+    """콘솔 창이 뜨지 않도록 pythonw.exe로 실행하고, 패키지 경로를 함께 넘긴다.
+
+    `pythonw -m claude_usage_overlay`만으로는 안 된다. 시작 프로그램의 cwd는
+    저장소가 아니라 대개 system32이고 이 패키지는 어디에도 설치되지 않으므로
+    ModuleNotFoundError가 난다. pythonw에는 콘솔이 없어서 그 오류는 아무 데도
+    안 남고, 사용자는 "자동 실행이 안 켜지네"만 본다. Run 값은 문자열 하나뿐이라
+    작업 디렉터리를 따로 줄 수 없으니 경로를 명령 안에 박는다.
+
+    따옴표 규칙: 바깥은 큰따옴표, 파이썬 문자열은 작은따옴표. 중첩된 큰따옴표가
+    하나라도 있으면 CommandLineToArgvW가 이 값을 잘못 쪼갠다. 경로에 슬래시를
+    쓰는 것도 같은 이유다 — 백슬래시가 파이썬 문자열 안에서 이스케이프로 읽힌다.
+    """
     exe = sys.executable.replace("python.exe", "pythonw.exe")
-    return f'"{exe}" -m claude_usage_overlay'
+    code = (
+        "import sys, runpy; "
+        f"sys.path.insert(0, '{package_root().as_posix()}'); "
+        "runpy.run_module('claude_usage_overlay', run_name='__main__')"
+    )
+    return f'"{exe}" -c "{code}"'
 
 
 def is_enabled() -> bool:
@@ -2515,7 +2843,26 @@ def disable() -> None:
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_autostart.py -v`
-Expected: PASS (3 passed)
+Expected: PASS (5 passed)
+
+- [ ] **Step 4b: 명령이 저장소 밖에서 실제로 도는지 확인**
+
+단위 테스트는 문자열만 본다. **자동 실행이 실패하는 방식이 정확히 "다른 cwd에서 import가 안 되는 것"이므로 한 번은 진짜로 돌려봐야 한다.**
+
+먼저 저장소 안에서 경로를 뽑는다.
+
+```bash
+python -c "from claude_usage_overlay.autostart import package_root; print(package_root().as_posix())"
+```
+
+그 값을 아래 `<ROOT>` 자리에 넣고, **저장소 밖에서** 실행한다.
+
+```bash
+cd /c/Windows && python -c "import sys; sys.path.insert(0, '<ROOT>'); import claude_usage_overlay as m; print('OK', m.__file__)"
+```
+
+Expected: `OK <저장소 경로>\claude_usage_overlay\__init__.py`.
+`No module named claude_usage_overlay`가 나오면 `package_root()`가 틀린 것이고, 그대로 두면 자동 실행이 조용히 안 켜진다.
 
 - [ ] **Step 5: `claude_usage_overlay/tray.py` 작성**
 
@@ -2536,6 +2883,16 @@ from .models import HudState, Status
 
 
 STALE_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
+
+
+def icon_key(state: HudState) -> tuple:
+    """아이콘 그림이 달라지는 조건. 이 값이 그대로면 다시 그릴 필요가 없다.
+
+    사용률은 반올림한 정수만 그림에 나타난다. 23.0%와 23.4%는 같은 그림이다.
+    """
+    if state.snapshot is None:
+        return (state.status, None)
+    return (state.status, round(state.snapshot.five_hour_pct))
 
 
 def _tooltip(state: HudState) -> str:
@@ -2562,10 +2919,14 @@ class Tray:
         self._poller = poller
         self._overlay = overlay
         self._config = config
+
+        state = poller.state()
+        self._icon_key = icon_key(state)
+        self._title = _tooltip(state)
         self._icon = pystray.Icon(
             "claude-usage-overlay",
-            icon=render_icon(poller.state(), warn=config.warn_pct, danger=config.danger_pct),
-            title=_tooltip(poller.state()),
+            icon=render_icon(state, warn=config.warn_pct, danger=config.danger_pct),
+            title=self._title,
             menu=self._build_menu(),
         )
 
@@ -2613,11 +2974,26 @@ class Tray:
     # --- 공개 인터페이스 --------------------------------------------------
 
     def refresh_icon(self) -> None:
+        """메인 스레드가 1초마다 부른다. **실제로 바뀐 것만 밀어 넣는다.**
+
+        pystray의 Win32 백엔드는 icon·title 세터마다 HICON을 새로 만들고
+        Shell_NotifyIcon을 부른다. 무조건 갱신하면 하루 86,400회다.
+        """
         state = self._poller.state()
-        self._icon.icon = render_icon(
-            state, warn=self._config.warn_pct, danger=self._config.danger_pct
-        )
-        self._icon.title = _tooltip(state)
+
+        key = icon_key(state)
+        if key != self._icon_key:
+            self._icon_key = key
+            self._icon.icon = render_icon(
+                state, warn=self._config.warn_pct, danger=self._config.danger_pct
+            )
+
+        # 툴팁은 카운트다운 때문에 그림보다 자주 바뀌지만, 분 단위라
+        # 실제로 달라지는 것은 분당 한 번이다.
+        title = _tooltip(state)
+        if title != self._title:
+            self._title = title
+            self._icon.title = title
 
     def run(self) -> None:
         """블로킹 호출. 별도 스레드에서 부른다."""
@@ -2626,6 +3002,60 @@ class Tray:
     def stop(self) -> None:
         self._icon.stop()
 ```
+
+- [ ] **Step 5b: `tests/test_tray.py` 작성**
+
+`Tray`는 트레이가 있는 세션이 없으면 만들 수 없다. 순수 함수 둘만 테스트한다 — 갱신을 얼마나 아끼는지는 `icon_key`가 결정하고, 툴팁 내용은 `_tooltip`이 결정한다.
+
+```python
+from datetime import datetime, timedelta, timezone
+
+from claude_usage_overlay.models import HudState, Status, UsageSnapshot
+from claude_usage_overlay.tray import _tooltip, icon_key
+
+NOW = datetime(2026, 8, 10, 3, 25, tzinfo=timezone.utc)
+
+
+def state(status=Status.OK, pct=23.0, seven=15.0):
+    return HudState(status, UsageSnapshot(pct, NOW + timedelta(hours=2), seven, NOW), "")
+
+
+def test_icon_key_ignores_sub_percent_drift():
+    """23.0%와 23.4%는 같은 그림이다. 다시 그릴 이유가 없다."""
+    assert icon_key(state(pct=23.0)) == icon_key(state(pct=23.4))
+
+
+def test_icon_key_changes_when_the_drawn_digit_changes():
+    assert icon_key(state(pct=23.0)) != icon_key(state(pct=24.0))
+
+
+def test_icon_key_changes_with_status():
+    """흐림 여부가 바뀌면 같은 숫자라도 다시 그려야 한다."""
+    assert icon_key(state(Status.OK)) != icon_key(state(Status.STALE))
+
+
+def test_icon_key_handles_a_missing_snapshot():
+    assert icon_key(HudState(Status.RELOGIN, None, "재로그인 필요")) == (Status.RELOGIN, None)
+
+
+def test_tooltip_has_both_windows():
+    text = _tooltip(state())
+    assert "5시간 창" in text and "23%" in text
+    assert "7일 창" in text and "15%" in text
+
+
+def test_tooltip_omits_seven_day_when_missing():
+    assert "7일 창" not in _tooltip(state(seven=None))
+
+
+def test_tooltip_without_a_snapshot_shows_the_detail():
+    """RELOGIN·SCHEMA_ERROR·첫 조회 전이 모두 여기로 온다."""
+    text = _tooltip(HudState(Status.RELOGIN, None, "재로그인 필요 — claude auth login"))
+    assert "claude auth login" in text
+```
+
+Run: `python -m pytest tests/test_tray.py -v`
+Expected: PASS (7 passed)
 
 - [ ] **Step 6: 의존성 설치 확인**
 
@@ -2640,7 +3070,7 @@ Expected: PASS
 - [ ] **Step 8: 커밋**
 
 ```bash
-git add claude_usage_overlay/autostart.py claude_usage_overlay/tray.py tests/test_autostart.py
+git add claude_usage_overlay/autostart.py claude_usage_overlay/tray.py tests/test_autostart.py tests/test_tray.py
 git commit -m "feat: 트레이 아이콘과 시작 프로그램 등록 추가"
 ```
 
@@ -2679,11 +3109,16 @@ from .credentials import CredentialStore
 from .overlay import Overlay
 from .poller import Poller
 from .tray import Tray
+from .winmetrics import enable_dpi_awareness
 
 PUMP_INTERVAL_MS = 1000
 
 
 def main() -> None:
+    # Tk()보다 먼저 불러야 한다. 이걸 빠뜨리면 Windows가 창을 비트맵 확대하고
+    # 그 위에 Overlay가 dpi_scale()을 또 곱해 배율의 제곱만큼 커진다.
+    enable_dpi_awareness()
+
     config = load_config()
 
     poller = Poller(store=CredentialStore(), config=config)
@@ -2725,6 +3160,7 @@ Run: `python -m claude_usage_overlay`
 - [ ] "오버레이 숨기기"로 창이 사라지고, 메뉴 문구가 "오버레이 보이기"로 바뀐다
 - [ ] "지금 갱신"을 누르면 몇 초 안에 갱신 시각이 "방금 갱신됨"으로 바뀐다
 - [ ] 오버레이를 드래그해 옮기고 프로그램을 재시작하면 그 위치에 뜬다
+- [ ] **"시작할 때 자동 실행"을 켜고 로그아웃/로그인하면 오버레이가 저절로 뜬다.** 단위 테스트가 못 잡는 유일한 실패 경로다 — 안 뜨면 `autostart.build_command()`의 경로가 틀린 것이다 (Task 11 Step 4b). 확인 후 체크를 원래대로 되돌린다
 - [ ] "종료"로 프로세스가 완전히 끝난다 (작업 관리자에서 pythonw 확인)
 
 - [ ] **Step 4: 실패 상황 수동 검증**
@@ -2742,7 +3178,9 @@ Get-Item "$env:USERPROFILE\.claude\.credentials.json" | Select-Object LastWriteT
 
 - [ ] **Step 5: `README.md` 작성**
 
-```markdown
+아래 블록은 **네 겹 백틱**으로 감쌌다. 안에 세 겹 코드 블록이 들어 있어서 세 겹으로 감싸면 첫 번째 ` ``` `에서 펜스가 닫히고 README가 깨진 채로 커밋된다. 파일에 쓸 때는 바깥 네 겹만 벗긴다.
+
+````markdown
 # Claude Usage Overlay
 
 Claude 사용량(5시간 창)을 Windows 화면에 항상 띄우는 상주 프로그램.
@@ -2798,7 +3236,7 @@ python -m claude_usage_overlay
 pip install pytest
 python -m pytest -v
 ```
-```
+````
 
 - [ ] **Step 6: 전체 테스트 실행**
 
@@ -2830,4 +3268,4 @@ Get-Item "$env:USERPROFILE\.claude\.credentials.json" | Select-Object LastWriteT
 - [ ] **엔드포인트 호출 한도 실측** — 5분 주기는 안전하다고 판단해 고른 값이지 측정값이 아니다. 프로그램을 몇 시간 켜두고 429가 한 번도 안 나오는지 확인한다. 나오면 `poll_seconds`를 올리고 `MIN_POLL_SECONDS`도 함께 올린다.
 - [ ] **`client_id` 안정성** — 토큰 갱신을 하지 않으므로 **지금은 무관하다.** 위 관찰 결과 갱신 로직을 넣게 되면 그때 다시 본다.
 - [ ] **스키마 변경 감지** — `SCHEMA_ERROR` 상태가 뜨면 `/api/oauth/usage` 응답을 직접 확인하고 `usage_client.py`의 파싱을 고친다. 판정 기준은 `five_hour.utilization`이 숫자로 읽히느냐 하나뿐이므로, 이 상태가 떴다는 것은 정말로 보여줄 숫자가 없다는 뜻이다.
-- [ ] **고배율 환경 실검증** — `winmetrics`로 배율을 흡수하도록 짰지만, 실제로 150% PC에서 돌려본 것은 아니다. 배율을 바꿔 한 번 확인한다. tkinter가 DPI를 어떻게 처리하느냐에 따라 `dpi_scale()`을 곱하는 것이 이중 확대가 될 수 있다 — 그 경우 창이 지나치게 커지므로 바로 눈에 띈다.
+- [ ] **고배율 환경 실검증** — `winmetrics`로 배율을 흡수하도록 짰고 이중 확대는 `enable_dpi_awareness()`로 막아뒀지만, **실제로 150% PC에서 돌려본 것은 아니다.** 배율을 바꿔 한 번 확인한다. 창이 100%일 때보다 눈에 띄게 크면(150%에서 2.25배) `enable_dpi_awareness()`가 안 먹은 것이고, 반대로 작으면 `dpi_scale()` 곱셈이 빠진 곳이 있는 것이다.
