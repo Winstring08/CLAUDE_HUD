@@ -17,6 +17,10 @@ MIN_POLL_SECONDS = 120
 class Config:
     x: int | None = None
     y: int | None = None
+    # 위치를 저장할 때의 창 폭. 창 크기가 바뀌면 저장된 x를 보정하는 데 쓴다 —
+    # 좌상단 좌표만 기억하면 창이 좁아졌을 때 오른쪽 구석에 붙여둔 창이
+    # 화면 안쪽으로 밀려 들어온다.
+    win_w: int | None = None
     poll_seconds: int = 300
     warn_pct: int = 70
     danger_pct: int = 90
@@ -28,6 +32,7 @@ class Config:
 _TYPES = {
     "x": int,
     "y": int,
+    "win_w": int,
     "poll_seconds": int,
     "warn_pct": int,
     "danger_pct": int,
@@ -37,7 +42,7 @@ _TYPES = {
 
 # 프로그램이 바꾸는 값은 이 셋뿐이다. 나머지(poll_seconds·warn_pct·danger_pct)는
 # 사용자가 메모장으로 고치는 값이라 저장할 때 건드리지 않는다.
-UI_OWNED = ("x", "y", "overlay_visible")
+UI_OWNED = ("x", "y", "win_w", "overlay_visible")
 
 
 def config_path() -> Path:

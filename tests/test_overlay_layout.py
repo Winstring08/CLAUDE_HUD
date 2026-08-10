@@ -115,6 +115,57 @@ def test_ring_number_fits_inside_the_ring(root):
         assert px >= 12, f"{text!r}가 {px}px까지 줄었다 — 링이 너무 작다"
 
 
+class _FakeOverlay:
+    """_keep_right_edge만 떼어 검사한다. 창을 띄우지 않는다."""
+
+    def __init__(self, new_w, old_w):
+        from claude_usage_overlay.config import Config
+
+        self._w = new_w
+        self._config = Config(win_w=old_w)
+
+    keep = ov.Overlay._keep_right_edge
+
+
+class _FakeRoot:
+    def __init__(self, width=2560):
+        self._width = width
+
+    def winfo_screenwidth(self):
+        return self._width
+
+
+def test_narrower_window_keeps_its_right_edge():
+    """오른쪽 구석에 붙여둔 창은 폭이 줄어도 그 자리에 붙어 있어야 한다.
+
+    저장하는 것은 좌상단 좌표뿐이라, 보정이 없으면 줄어든 폭만큼 오른쪽에
+    틈이 벌어진다 — 240에서 180으로 줄였을 때 실제로 60px이 벌어졌다.
+    """
+    old_w, new_w, screen = 240, 180, 2560
+    right_edge_x = screen - old_w - 24        # 예전 폭 기준으로 구석에 붙인 위치
+    fake = _FakeOverlay(new_w, old_w)
+
+    moved = fake.keep(right_edge_x, _FakeRoot(screen))
+    assert moved + new_w == right_edge_x + old_w, "오른쪽 끝이 유지돼야 한다"
+
+
+def test_window_on_the_left_half_is_left_anchored():
+    """왼쪽에 둔 창은 좌상단이 기준이라고 보는 편이 자연스럽다."""
+    fake = _FakeOverlay(180, 240)
+    assert fake.keep(100, _FakeRoot(2560)) == 100
+
+
+def test_no_saved_width_leaves_the_position_alone():
+    """win_w를 모르던 시절에 저장된 설정도 그대로 동작해야 한다."""
+    fake = _FakeOverlay(180, None)
+    assert fake.keep(2296, _FakeRoot(2560)) == 2296
+
+
+def test_same_width_is_untouched():
+    fake = _FakeOverlay(180, 180)
+    assert fake.keep(2356, _FakeRoot(2560)) == 2356
+
+
 def test_font_sizes_are_pixels_not_points():
     """Tk에서 양수 크기는 포인트다. 포인트는 tk scaling이 이미 DPI로
     확대하므로, 거기에 dpi_scale()을 또 곱하면 고배율에서 이중 확대된다."""

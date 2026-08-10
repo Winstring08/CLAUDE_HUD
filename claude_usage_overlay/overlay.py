@@ -216,12 +216,28 @@ class Overlay:
         없는 영역을 가리킨다. 그대로 두면 창을 되찾을 방법이 없다.
         """
         if self._config.x is not None and self._config.y is not None:
-            if is_position_visible(
-                self._config.x, self._config.y, self._w, self._h, virtual_screen_rect()
-            ):
-                return self._config.x, self._config.y
+            x = self._keep_right_edge(self._config.x, root)
+            if is_position_visible(x, self._config.y, self._w, self._h, virtual_screen_rect()):
+                return x, self._config.y
 
         return root.winfo_screenwidth() - self._w - MARGIN, MARGIN
+
+    def _keep_right_edge(self, x: int, root: tk.Tk) -> int:
+        """창 폭이 바뀌었으면 오른쪽 가장자리를 유지하도록 x를 옮긴다.
+
+        저장하는 것은 좌상단 좌표뿐이라, 창이 좁아지면 오른쪽 끝이 그만큼
+        안으로 들어온다. 화면 오른쪽 구석에 붙여 쓰는 창에서는 그 틈이
+        그대로 눈에 띈다 — 폭을 240에서 180으로 줄였을 때 60px이 벌어졌다.
+
+        화면 오른쪽 절반에 있던 창만 보정한다. 왼쪽에 둔 창은 좌상단이
+        기준이라고 보는 편이 자연스럽다.
+        """
+        old_w = self._config.win_w
+        if not old_w or old_w == self._w:
+            return x
+        if x + old_w / 2 < root.winfo_screenwidth() / 2:
+            return x
+        return x + (old_w - self._w)
 
     # --- 드래그 이동 ------------------------------------------------------
 
@@ -237,6 +253,9 @@ class Overlay:
     def _on_release(self, _event) -> None:
         self._config.x = self._win.winfo_x()
         self._config.y = self._win.winfo_y()
+        # 창 폭을 함께 남긴다. 다음 판올림에서 폭이 바뀌어도 오른쪽 가장자리를
+        # 되찾을 수 있는 유일한 단서다.
+        self._config.win_w = self._w
         save_config(self._config)
 
     # --- 그리기 ----------------------------------------------------------
