@@ -40,6 +40,22 @@ TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 # 공개 클라이언트는 비밀값을 숨길 수 없으므로 처음부터 공개 전제로 설계된다.
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
+# **User-Agent를 반드시 보낸다.** 이 엔드포인트는 Cloudflare 뒤에 있고,
+# urllib의 기본값(`Python-urllib/3.12`)으로 보내면 요청이 OAuth 서버에
+# 닿지도 못한 채 차단된다 — 실측으로 `403` + `error code: 1010`(text/plain)이
+# 돌아온다. 아무 이름이나 붙이면 통과한다.
+USER_AGENT = "claude-usage-overlay/0.1"
+
+# OAuth 서버가 "이 refreshToken은 못 쓴다"고 말하는 코드들. 다시 시도해도
+# 결과가 같으므로 사용자에게 재로그인을 요구한다.
+#
+# **이 목록에 없는 실패는 재로그인 사유가 아니다.** Cloudflare 차단(1010),
+# 호출 한도(429), 서버 오류(5xx)는 전부 기다리면 낫는 것들인데, 상태 코드만
+# 보고 뭉뚱그리면 멀쩡한 인증을 두고 재로그인하라고 말하게 된다.
+FATAL_OAUTH_ERRORS = frozenset(
+    {"invalid_grant", "invalid_client", "unauthorized_client", "invalid_request"}
+)
+
 # 만료 30분 전부터 갱신한다. 더 일찍 갱신하면 회전이 잦아지고, 더 늦추면
 # 폴링 한 번을 만료된 토큰으로 날린다.
 REFRESH_MARGIN_MS = 30 * 60 * 1000
@@ -52,6 +68,30 @@ STALE_TOKEN_MSG = "토큰 만료 — 갱신 실패"
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _is_fatal_oauth_error(body: bytes) -> bool:
+    """이 응답이 "refreshToken을 못 쓴다"는 뜻인지.
+
+    상태 코드로 판단하면 안 된다. 이 엔드포인트 앞에는 Cloudflare가 있어서,
+    막히면 OAuth 서버와 무관한 `403` + `error code: 1010`(text/plain)이 온다.
+    그걸 토큰 거부로 읽으면 멀쩡한 인증을 두고 재로그인하라고 말하게 된다.
+
+    진짜 거부는 JSON으로 오고 `error`에 사유가 담긴다. 두 형태를 다 본다 —
+    OAuth 규격의 `{"error": "invalid_grant"}`와 Anthropic 쪽의
+    `{"error": {"type": "..."}}` 둘 다 쓰인다(실측).
+    """
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False   # JSON이 아니면 OAuth 서버가 준 답이 아니다
+    if not isinstance(data, dict):
+        return False
+
+    error = data.get("error")
+    if isinstance(error, dict):
+        error = error.get("type")
+    return isinstance(error, str) and error in FATAL_OAUTH_ERRORS
 
 
 class CredentialStore:
@@ -144,7 +184,7 @@ class CredentialStore:
         res = self._request(
             "POST",
             TOKEN_URL,
-            {"Content-Type": "application/json"},
+            {"Content-Type": "application/json", "User-Agent": USER_AGENT},
             json_body={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
@@ -153,10 +193,10 @@ class CredentialStore:
             timeout=20.0,
         )
 
-        if res.status in (400, 401, 403):
-            # refreshToken이 거부됐다. 다시 시도해도 같으므로 재로그인뿐이다.
-            raise ReloginRequired(RELOGIN_MSG)
         if res.status != 200:
+            if _is_fatal_oauth_error(res.body):
+                raise ReloginRequired(RELOGIN_MSG)
+            # 여기까지 온 것은 기다리면 나을 수 있는 실패다.
             raise OSError(f"토큰 갱신 실패 (HTTP {res.status})")
 
         data = json.loads(res.body)

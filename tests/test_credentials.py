@@ -355,18 +355,73 @@ def test_network_failure_on_an_expired_token_reports_it(tmp_path):
     assert str(exc.value) == STALE_TOKEN_MSG
 
 
+def _responder(status, body: bytes):
+    def fake(method, url, headers, json_body=None, timeout=10.0):
+        return HttpResponse(status, body, {})
+    return fake
+
+
+# 아래 세 본문은 **실제로 받은 응답 그대로**다. 상태 코드만 보고 판단하면
+# 셋을 구분할 수 없어서, 멀쩡한 인증을 두고 재로그인을 요구하게 된다.
+CLOUDFLARE_BLOCK = b"error code: 1010"                       # 403, text/plain
+OAUTH_REJECT = b'{"error": "invalid_grant", "error_description": "Refresh token not found or invalid"}'
+RATE_LIMITED = b'{"error": {"type": "rate_limit_error", "message": "Rate limited. Please try again later."}}'
+
+
 def test_rejected_refresh_token_asks_for_relogin(tmp_path):
-    """400/401은 refreshToken이 죽었다는 뜻이다. 다시 시도해도 같다."""
+    """OAuth 서버가 invalid_grant를 주면 다시 시도해도 같다. 재로그인뿐이다."""
     p = tmp_path / ".credentials.json"
-    for status in (400, 401, 403):
-        write_creds(p, expires_at=NOW_MS - 1000)
-        store = CredentialStore(
-            path=p, now_ms=lambda: NOW_MS, request_fn=_issuer(status=status)
-        )
-        with pytest.raises(ReloginRequired) as exc:
-            store.get_access_token()
-        assert str(exc.value) == RELOGIN_MSG
-        assert _read_creds(p)["refreshToken"] == "ref-old", "거부됐으면 쓰지 않는다"
+    write_creds(p, expires_at=NOW_MS - 1000)
+    store = CredentialStore(
+        path=p, now_ms=lambda: NOW_MS, request_fn=_responder(400, OAUTH_REJECT)
+    )
+    with pytest.raises(ReloginRequired) as exc:
+        store.get_access_token()
+    assert str(exc.value) == RELOGIN_MSG
+    assert _read_creds(p)["refreshToken"] == "ref-old", "거부됐으면 쓰지 않는다"
+
+
+def test_cloudflare_block_is_not_mistaken_for_a_dead_token(tmp_path):
+    """이 엔드포인트 앞에는 Cloudflare가 있다.
+
+    User-Agent를 안 보내면 OAuth 서버에 닿지도 못한 채 403 + "error code: 1010"이
+    온다(실측). 상태 코드만 보고 토큰이 죽었다고 단정하면, 멀쩡한 인증을 두고
+    사용자에게 재로그인을 시키게 된다 — 실제로 한 번 그렇게 오진했다.
+    """
+    p = tmp_path / ".credentials.json"
+    write_creds(p, access="acc-live", expires_at=NOW_MS + 10 * 60 * 1000)   # 아직 살아 있음
+    store = CredentialStore(
+        path=p, now_ms=lambda: NOW_MS, request_fn=_responder(403, CLOUDFLARE_BLOCK)
+    )
+
+    assert store.get_access_token() == "acc-live", "기다리면 나을 실패다. 토큰을 버리지 않는다"
+    assert _read_creds(p)["refreshToken"] == "ref-old"
+
+
+def test_rate_limit_is_not_mistaken_for_a_dead_token(tmp_path):
+    """429도 기다리면 낫는다. 갱신은 8시간에 한 번이라 다음 폴링이면 충분하다."""
+    p = tmp_path / ".credentials.json"
+    write_creds(p, access="acc-live", expires_at=NOW_MS + 10 * 60 * 1000)
+    store = CredentialStore(
+        path=p, now_ms=lambda: NOW_MS, request_fn=_responder(429, RATE_LIMITED)
+    )
+    assert store.get_access_token() == "acc-live"
+
+
+def test_user_agent_is_always_sent(tmp_path):
+    """빠뜨리면 Cloudflare가 막아 갱신이 통째로 안 된다."""
+    p = tmp_path / ".credentials.json"
+    write_creds(p, expires_at=NOW_MS - 1000)
+    seen = {}
+
+    def spy(method, url, headers, json_body=None, timeout=10.0):
+        seen.update(headers)
+        return HttpResponse(200, json.dumps({
+            "access_token": "acc-new", "refresh_token": "ref-new", "expires_in": 28800,
+        }).encode(), {})
+
+    CredentialStore(path=p, now_ms=lambda: NOW_MS, request_fn=spy).get_access_token()
+    assert seen.get("User-Agent"), "User-Agent 없이 보내면 403 1010으로 막힌다"
 
 
 def test_incomplete_response_is_not_saved(tmp_path):
