@@ -6,6 +6,7 @@
 
 import ctypes
 import os
+from ctypes import wintypes
 from pathlib import Path
 
 SM_CXSMICON = 49
@@ -17,6 +18,9 @@ SM_CYVIRTUALSCREEN = 79
 DEFAULT_ICON_SIZE = 16
 MIN_VISIBLE_W = 40
 MIN_VISIBLE_H = 20
+
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWCP_ROUND = 2   # 큰 반경. 3(ROUNDSMALL)은 눈에 띄지 않을 만큼 작다
 
 
 def enable_dpi_awareness() -> None:
@@ -38,6 +42,34 @@ def enable_dpi_awareness() -> None:
         ctypes.windll.user32.SetProcessDPIAware()        # 그 이전
     except (AttributeError, OSError):
         pass
+
+
+def round_window_corners(hwnd: int) -> bool:
+    """창 모서리를 둥글게 만든다. 성공하면 True.
+
+    무테두리 창(overrideredirect)은 기본적으로 직각이다. DWM에 맡기면
+    부드러운 곡선에 그림자까지 붙는다 — 이 창은 항상 위에 떠 있으므로
+    경계가 배경과 구분되는 편이 낫다.
+
+    gdi32의 SetWindowRgn으로 직접 잘라내는 방법도 있고 반경을 마음대로
+    고를 수 있지만 쓰지 않는다. 안티앨리어싱이 없어 모서리가 계단으로
+    보인다(실측: r=8·12 모두 픽셀 계단이 그대로 드러난다). DWM 쪽은
+    반경을 못 고르는 대신 곡선이 매끈하다.
+
+    Windows 10 이하에서는 이 속성이 없어 실패한다. 그때는 예전처럼 각진
+    창이 될 뿐이므로 조용히 넘어간다 — 모서리 때문에 HUD가 안 뜨면 안 된다.
+    """
+    try:
+        value = ctypes.c_int(DWMWCP_ROUND)
+        rc = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd),
+            ctypes.c_uint(DWMWA_WINDOW_CORNER_PREFERENCE),
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+        )
+        return rc == 0
+    except (AttributeError, OSError, ValueError, TypeError):
+        return False
 
 
 def fonts_dir() -> Path:

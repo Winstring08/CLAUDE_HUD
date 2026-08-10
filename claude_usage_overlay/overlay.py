@@ -14,7 +14,12 @@ from . import theme
 from .config import Config, save_config
 from .formatting import format_age, format_countdown
 from .models import HudState, Status
-from .winmetrics import dpi_scale, is_position_visible, virtual_screen_rect
+from .winmetrics import (
+    dpi_scale,
+    is_position_visible,
+    round_window_corners,
+    virtual_screen_rect,
+)
 
 # 폭 240은 눈대중이 아니라 역산이다. 가장 긴 문구인 RELOGIN 뒷줄
 # "Claude Code를 한 번 실행하세요"가 11px Segoe UI에서 163px이고,
@@ -91,6 +96,7 @@ class Overlay:
             self._win, width=self._w, height=self._h, bg=theme.BG, highlightthickness=0
         )
         self._canvas.pack()
+        self._round_corners()
 
         self._drag = {"x": 0, "y": 0}
         for widget in (self._win, self._canvas):
@@ -131,6 +137,21 @@ class Overlay:
         self._config.overlay_visible = visible
         save_config(self._config)
         self._win.after(0, self._win.deiconify if visible else self._win.withdraw)
+
+    # --- 모양 ------------------------------------------------------------
+
+    def _round_corners(self) -> None:
+        """무테두리 창의 직각 모서리를 둥글게 다듬는다.
+
+        HWND는 창이 한 번 배치된 뒤에야 유효하므로 update_idletasks가 먼저다.
+        실패하면 각진 창일 뿐이니 조용히 넘어간다.
+        """
+        try:
+            self._win.update_idletasks()
+            hwnd = int(self._win.wm_frame(), 16)
+        except (tk.TclError, ValueError):
+            return
+        round_window_corners(hwnd)
 
     # --- 위치 ------------------------------------------------------------
 

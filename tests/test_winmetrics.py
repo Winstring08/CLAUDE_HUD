@@ -32,6 +32,16 @@ def test_enable_dpi_awareness_is_safe_to_call():
     winmetrics.enable_dpi_awareness()   # 두 번째 호출은 실패하지만 조용해야 한다
 
 
+def test_round_window_corners_never_raises():
+    """Overlay.__init__에서 불린다. 여기서 죽으면 HUD가 아예 안 뜬다.
+
+    Windows 10 이하에는 이 DWM 속성이 없고, 창이 아직 배치되기 전이면
+    핸들도 쓸모없는 값이다. 어느 쪽이든 각진 창이 될 뿐이어야 한다.
+    """
+    for bogus in (0, -1, 12345):
+        assert winmetrics.round_window_corners(bogus) in (True, False)
+
+
 def test_virtual_screen_rect_has_positive_extent():
     _x, _y, w, h = winmetrics.virtual_screen_rect()
     assert w > 0 and h > 0
