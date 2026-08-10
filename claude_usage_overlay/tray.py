@@ -180,6 +180,9 @@ class Tray:
         except Exception as err:  # 네트워크 실패·형식 변경 등
             self._notify(f"글꼴 설치 실패 — {type(err).__name__}")
             return
+        # 이 프로세스에도 바로 올려 둔다. 그래야 다음 실행에서 곧바로 쓰인다 —
+        # 레지스트리 등록만으로는 다음 로그온까지 기다려야 한다.
+        font_install.activate()
         self._notify("Pretendard 설치됨 — 다시 실행하면 적용됩니다")
 
     def _notify(self, message: str) -> None:

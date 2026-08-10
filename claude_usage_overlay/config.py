@@ -15,12 +15,9 @@ MIN_POLL_SECONDS = 120
 
 @dataclass
 class Config:
-    x: int | None = None
-    y: int | None = None
-    # 위치를 저장할 때의 창 폭. 창 크기가 바뀌면 저장된 x를 보정하는 데 쓴다 —
-    # 좌상단 좌표만 기억하면 창이 좁아졌을 때 오른쪽 구석에 붙여둔 창이
-    # 화면 안쪽으로 밀려 들어온다.
-    win_w: int | None = None
+    # 창 위치는 저장하지 않는다. 드래그해서 옮긴 자리는 그 세션에서만 유지되고,
+    # 다시 켜면 늘 같은 자리(화면 오른쪽 위)에 뜬다 — 어디 있을지 늘 알 수 있는
+    # 편이 낫고, 저장된 좌표가 지금 없는 모니터를 가리키는 사고도 사라진다.
     poll_seconds: int = 300
     warn_pct: int = 70
     danger_pct: int = 90
@@ -30,9 +27,6 @@ class Config:
 # 필드별 타입 표. Config에 필드를 추가하면 여기도 추가해야 한다 —
 # 안 하면 그 설정이 조용히 무시되므로 테스트가 이 짝을 지킨다.
 _TYPES = {
-    "x": int,
-    "y": int,
-    "win_w": int,
     "poll_seconds": int,
     "warn_pct": int,
     "danger_pct": int,
@@ -40,9 +34,9 @@ _TYPES = {
 }
 
 
-# 프로그램이 바꾸는 값은 이 셋뿐이다. 나머지(poll_seconds·warn_pct·danger_pct)는
+# 프로그램이 바꾸는 값은 이것뿐이다. 나머지(poll_seconds·warn_pct·danger_pct)는
 # 사용자가 메모장으로 고치는 값이라 저장할 때 건드리지 않는다.
-UI_OWNED = ("x", "y", "win_w", "overlay_visible")
+UI_OWNED = ("overlay_visible",)
 
 
 def config_path() -> Path:

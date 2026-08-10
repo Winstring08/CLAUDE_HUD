@@ -165,6 +165,35 @@ def register(paths: list[Path]) -> None:
         pass
 
 
+def activate(fonts_dir: Path | None = None) -> int:
+    """설치돼 있는 글꼴을 **이 프로세스에서 쓸 수 있게** 올린다. 올린 개수 반환.
+
+    기동할 때마다 부른다. 그러지 않으면 방금 설치한 글꼴이 다음 로그온 전까지
+    보이지 않는다 — 이유가 둘 겹쳐 있다.
+
+      · `AddFontResourceW`로 올린 글꼴은 **올린 프로세스가 살아 있는 동안만**
+        시스템 글꼴 목록에 남는다. 설치를 끝낸 프로세스가 종료되면 빠진다.
+      · 레지스트리 등록(HKCU\\...\\Fonts)은 **다음 로그온부터** 반영된다.
+
+    그래서 "설치했는데 글꼴이 그대로"인 구간이 생긴다. 기동 시 한 번 올리면
+    그 구간이 사라진다. 이미 올라와 있어도 무해하다.
+
+    Tk()를 만들기 전에 불러야 한다. Tk는 시작할 때 글꼴 목록을 읽는다.
+    """
+    directory = fonts_dir or user_fonts_dir()
+    loaded = 0
+    for name in WANTED_FILES:
+        path = directory / name
+        if not path.exists():
+            continue
+        try:
+            if ctypes.windll.gdi32.AddFontResourceW(ctypes.c_wchar_p(str(path))):
+                loaded += 1
+        except (AttributeError, OSError):
+            pass
+    return loaded
+
+
 def install(
     request_fn: Callable = http_client.request, fonts_dir: Path | None = None
 ) -> list[Path]:

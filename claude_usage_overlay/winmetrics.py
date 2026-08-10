@@ -1,6 +1,6 @@
 """PC마다 달라지는 화면 지표를 한 곳에 가둔다.
 
-윈도우 설치 드라이브, 화면 배율, 모니터 구성은 여기서만 다룬다.
+윈도우 설치 드라이브, 화면 배율, 트레이 아이콘 크기는 여기서만 다룬다.
 나머지 모듈은 그 차이를 모른다.
 """
 
@@ -10,14 +10,8 @@ from ctypes import wintypes
 from pathlib import Path
 
 SM_CXSMICON = 49
-SM_XVIRTUALSCREEN = 76
-SM_YVIRTUALSCREEN = 77
-SM_CXVIRTUALSCREEN = 78
-SM_CYVIRTUALSCREEN = 79
 
 DEFAULT_ICON_SIZE = 16
-MIN_VISIBLE_W = 40
-MIN_VISIBLE_H = 20
 
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2   # 큰 반경. 3(ROUNDSMALL)은 눈에 띄지 않을 만큼 작다
@@ -108,26 +102,3 @@ def dpi_scale() -> float:
     except (AttributeError, OSError):
         dpi = 96
     return max(1.0, dpi / 96.0)
-
-
-def virtual_screen_rect() -> tuple[int, int, int, int]:
-    """모든 모니터를 감싸는 사각형 (x, y, width, height)."""
-    width = _metric(SM_CXVIRTUALSCREEN)
-    height = _metric(SM_CYVIRTUALSCREEN)
-    if width <= 0 or height <= 0:
-        return (0, 0, 1920, 1080)
-    return (_metric(SM_XVIRTUALSCREEN), _metric(SM_YVIRTUALSCREEN), width, height)
-
-
-def is_position_visible(
-    x: int, y: int, w: int, h: int, rect: tuple[int, int, int, int]
-) -> bool:
-    """창이 화면에 충분히 걸쳐 있어 사용자가 드래그로 되찾을 수 있는지.
-
-    모니터를 뽑으면 저장된 좌표가 아무 화면에도 없는 영역을 가리킬 수 있다.
-    그때 창이 보이지 않는 곳에 떠서 되찾을 방법이 없어지는 것을 막는다.
-    """
-    rx, ry, rw, rh = rect
-    overlap_w = min(x + w, rx + rw) - max(x, rx)
-    overlap_h = min(y + h, ry + rh) - max(y, ry)
-    return overlap_w >= MIN_VISIBLE_W and overlap_h >= MIN_VISIBLE_H

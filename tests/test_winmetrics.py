@@ -40,39 +40,3 @@ def test_round_window_corners_never_raises():
     """
     for bogus in (0, -1, 12345):
         assert winmetrics.round_window_corners(bogus) in (True, False)
-
-
-def test_virtual_screen_rect_has_positive_extent():
-    _x, _y, w, h = winmetrics.virtual_screen_rect()
-    assert w > 0 and h > 0
-
-
-RECT = (0, 0, 2560, 1440)  # x, y, width, height
-
-
-def test_window_fully_inside_is_visible():
-    assert winmetrics.is_position_visible(100, 100, 186, 62, RECT)
-
-
-def test_window_far_off_to_the_right_is_not_visible():
-    assert not winmetrics.is_position_visible(4000, 100, 186, 62, RECT)
-
-
-def test_window_far_above_is_not_visible():
-    assert not winmetrics.is_position_visible(100, -500, 186, 62, RECT)
-
-
-def test_window_with_enough_overlap_counts_as_visible():
-    # 오른쪽 끝에 60px 걸쳐 있으면 드래그로 되찾을 수 있다
-    assert winmetrics.is_position_visible(2500, 100, 186, 62, RECT)
-
-
-def test_window_with_a_sliver_showing_is_not_visible():
-    # 20px만 걸쳐 있으면 사실상 못 찾는다
-    assert not winmetrics.is_position_visible(2540, 100, 186, 62, RECT)
-
-
-def test_secondary_monitor_left_of_primary_is_visible():
-    # 보조 모니터가 왼쪽에 있으면 가상 화면 원점이 음수다
-    rect = (-1920, 0, 4480, 1440)
-    assert winmetrics.is_position_visible(-1800, 200, 186, 62, rect)

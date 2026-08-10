@@ -132,6 +132,17 @@ def test_fetch_zip_asks_github_then_downloads():
     assert calls[1][2] >= 60, "47MB에 기본 10초 제한은 짧다"
 
 
+def test_activate_is_quiet_when_nothing_is_installed(tmp_path):
+    """기동할 때마다 부르는 함수다. 글꼴이 없어도 조용히 0을 돌려줘야 한다."""
+    assert font_install.activate(tmp_path) == 0
+
+
+def test_activate_survives_a_broken_font_file(tmp_path):
+    """받다 만 파일이 남아 있어도 여기서 죽으면 HUD가 아예 안 뜬다."""
+    (tmp_path / WANTED_FILES[0]).write_bytes(b"this is not a font")
+    assert font_install.activate(tmp_path) == 0
+
+
 def test_fetch_zip_reports_a_failed_release_lookup():
     with pytest.raises(OSError):
         fetch_zip(request_fn=lambda *a, **k: HttpResponse(503, b"", {}))

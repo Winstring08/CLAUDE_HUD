@@ -10,7 +10,6 @@ def test_missing_file_returns_defaults(tmp_path):
     assert cfg.warn_pct == 70
     assert cfg.danger_pct == 90
     assert cfg.overlay_visible is True
-    assert cfg.x is None and cfg.y is None
 
 
 def test_broken_json_returns_defaults(tmp_path):
@@ -21,18 +20,18 @@ def test_broken_json_returns_defaults(tmp_path):
 
 def test_partial_file_fills_missing_with_defaults(tmp_path):
     p = tmp_path / "config.json"
-    p.write_text(json.dumps({"x": 100, "y": 200}), encoding="utf-8")
+    p.write_text(json.dumps({"poll_seconds": 600}), encoding="utf-8")
     cfg = load_config(p)
-    assert cfg.x == 100
-    assert cfg.y == 200
+    assert cfg.poll_seconds == 600
     assert cfg.warn_pct == 70
+    assert cfg.danger_pct == 90
 
 
 def test_save_then_load_roundtrip(tmp_path):
     p = tmp_path / "nested" / "config.json"
-    save_config(Config(x=12, y=34, poll_seconds=600), p)
+    save_config(Config(poll_seconds=600, overlay_visible=False), p)
     cfg = load_config(p)
-    assert (cfg.x, cfg.y, cfg.poll_seconds) == (12, 34, 600)
+    assert (cfg.poll_seconds, cfg.overlay_visible) == (600, False)
 
 
 def test_poll_seconds_floor_is_enforced(tmp_path):
@@ -48,19 +47,19 @@ def test_wrong_types_fall_back_to_defaults(tmp_path):
     pythonw에는 콘솔이 없어서 여기서 예외가 나면 원인조차 화면에 남지 않는다.
     """
     p = tmp_path / "config.json"
-    for broken in ({"poll_seconds": None}, {"poll_seconds": "오분"}, {"x": "왼쪽"}):
+    for broken in ({"poll_seconds": None}, {"poll_seconds": "오분"}, {"warn_pct": "칠십"}):
         p.write_text(json.dumps(broken), encoding="utf-8")
         cfg = load_config(p)
         assert cfg.poll_seconds == 300
-        assert cfg.x is None
+        assert cfg.warn_pct == 70
 
 
 def test_a_broken_value_does_not_discard_the_good_ones(tmp_path):
     p = tmp_path / "config.json"
-    p.write_text(json.dumps({"x": 100, "y": "아래"}), encoding="utf-8")
+    p.write_text(json.dumps({"poll_seconds": 600, "warn_pct": "칠십"}), encoding="utf-8")
     cfg = load_config(p)
-    assert cfg.x == 100
-    assert cfg.y is None
+    assert cfg.poll_seconds == 600
+    assert cfg.warn_pct == 70
 
 
 def test_overlay_visible_only_accepts_a_real_bool(tmp_path):
@@ -88,13 +87,13 @@ def test_manual_edits_survive_a_position_save(tmp_path):
     p.write_text(json.dumps({"poll_seconds": 900}), encoding="utf-8")
     cfg = load_config(p)                                            # 기동
     p.write_text(json.dumps({"poll_seconds": 1200, "warn_pct": 50}), encoding="utf-8")
-    cfg.x, cfg.y = 100, 200                                         # 드래그
+    cfg.overlay_visible = False                                     # 트레이 메뉴 조작
     save_config(cfg, p)
 
     after = load_config(p)
     assert after.poll_seconds == 1200
     assert after.warn_pct == 50
-    assert (after.x, after.y) == (100, 200)
+    assert after.overlay_visible is False
 
 
 def test_first_save_writes_every_field(tmp_path):
@@ -108,5 +107,5 @@ def test_save_survives_a_broken_file_on_disk(tmp_path):
     """읽어서 병합하는 코드가 깨진 파일에서 예외를 던지면 안 된다."""
     p = tmp_path / "config.json"
     p.write_text("{ not json", encoding="utf-8")
-    save_config(Config(x=1, y=2), p)
-    assert load_config(p).x == 1
+    save_config(Config(overlay_visible=False), p)
+    assert load_config(p).overlay_visible is False

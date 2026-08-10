@@ -23,15 +23,15 @@ from .formatting import (
     format_countdown,
 )
 from .models import HudState, Status
-from .winmetrics import (
-    dpi_scale,
-    is_position_visible,
-    round_window_corners,
-    virtual_screen_rect,
-)
+from .winmetrics import dpi_scale, round_window_corners
 
-# 폭 180은 눈대중이 아니라 역산이다. 화면에 나갈 수 있는 모든 문구를 재서
-# 가장 긴 것이 카운트다운 "10시간 14분 후 리셋"(169px)이고, 거기에 여유를 뒀다.
+# 폭 190은 눈대중이 아니라 역산이다. 화면에 나갈 수 있는 모든 문구를 재서
+# 가장 긴 것이 카운트다운 "10시간 14분 후 리셋"이고, **Pretendard가 없는 PC의
+# 폴백 글꼴(Segoe UI) 기준으로 181px**이다. 거기에 여유를 뒀다.
+#
+# 글꼴이 무엇이냐로 폭이 달라진다는 점이 중요하다 — 같은 문구가 Pretendard로는
+# 169px, Segoe UI로는 181px이다. 한글 글리프가 없는 Segoe UI에서는 Tk가 고른
+# 다른 글꼴이 한글을 그리고 그쪽이 더 넓기 때문이다. 창은 **넓은 쪽**에 맞춘다.
 #
 # 한때 240px이었다. 드물게 뜨는 안내 문구가 길었기 때문이다 —
 # "Claude Code를 한 번 실행하세요"가 228px, "호출 한도 — 잠시 후 재시도"가
@@ -40,7 +40,7 @@ from .winmetrics import (
 #
 # create_text에는 width 옵션이 없어 넘치면 경고 없이 잘린다.
 # tests/test_overlay_layout.py가 이 여유를 지킨다.
-BASE_WIDTH, BASE_HEIGHT = 180, 62
+BASE_WIDTH, BASE_HEIGHT = 190, 62
 BASE_RING_BOX = (12, 12, 54, 54)   # x0, y0, x1, y1
 BASE_RING_WIDTH = 5
 BASE_TEXT_X = 66
@@ -144,11 +144,12 @@ class Overlay:
         self._canvas.pack()
         self._round_corners()
 
+        # 드래그로 옮길 수 있지만 놓은 자리를 저장하지는 않는다.
+        # 그래서 <ButtonRelease-1>에 걸 일이 없다.
         self._drag = {"x": 0, "y": 0}
         for widget in (self._win, self._canvas):
             widget.bind("<Button-1>", self._on_press)
             widget.bind("<B1-Motion>", self._on_drag)
-            widget.bind("<ButtonRelease-1>", self._on_release)
 
         # 링 그림 캐시. PhotoImage는 참조가 끊기면 화면에서 사라진다.
         self._ring_key: tuple | None = None
@@ -210,34 +211,13 @@ class Overlay:
     # --- 위치 ------------------------------------------------------------
 
     def _initial_position(self, root: tk.Tk) -> tuple[int, int]:
-        """저장된 위치를 쓰되, 지금 화면에 없으면 기본 위치로 되돌린다.
+        """언제나 화면 오른쪽 위. 옮겨둔 자리를 기억하지 않는다.
 
-        보조 모니터에 창을 두고 케이블을 뽑으면 저장된 좌표가 아무 화면에도
-        없는 영역을 가리킨다. 그대로 두면 창을 되찾을 방법이 없다.
+        드래그는 그 세션 동안만 유지된다. 늘 같은 자리에서 시작하는 편이
+        어디를 봐야 할지 헷갈리지 않고, 저장된 좌표가 지금 없는 모니터를
+        가리켜 창을 못 찾는 사고도 애초에 생기지 않는다.
         """
-        if self._config.x is not None and self._config.y is not None:
-            x = self._keep_right_edge(self._config.x, root)
-            if is_position_visible(x, self._config.y, self._w, self._h, virtual_screen_rect()):
-                return x, self._config.y
-
         return root.winfo_screenwidth() - self._w - MARGIN, MARGIN
-
-    def _keep_right_edge(self, x: int, root: tk.Tk) -> int:
-        """창 폭이 바뀌었으면 오른쪽 가장자리를 유지하도록 x를 옮긴다.
-
-        저장하는 것은 좌상단 좌표뿐이라, 창이 좁아지면 오른쪽 끝이 그만큼
-        안으로 들어온다. 화면 오른쪽 구석에 붙여 쓰는 창에서는 그 틈이
-        그대로 눈에 띈다 — 폭을 240에서 180으로 줄였을 때 60px이 벌어졌다.
-
-        화면 오른쪽 절반에 있던 창만 보정한다. 왼쪽에 둔 창은 좌상단이
-        기준이라고 보는 편이 자연스럽다.
-        """
-        old_w = self._config.win_w
-        if not old_w or old_w == self._w:
-            return x
-        if x + old_w / 2 < root.winfo_screenwidth() / 2:
-            return x
-        return x + (old_w - self._w)
 
     # --- 드래그 이동 ------------------------------------------------------
 
@@ -249,14 +229,6 @@ class Overlay:
         self._win.geometry(
             f"+{event.x_root - self._drag['x']}+{event.y_root - self._drag['y']}"
         )
-
-    def _on_release(self, _event) -> None:
-        self._config.x = self._win.winfo_x()
-        self._config.y = self._win.winfo_y()
-        # 창 폭을 함께 남긴다. 다음 판올림에서 폭이 바뀌어도 오른쪽 가장자리를
-        # 되찾을 수 있는 유일한 단서다.
-        self._config.win_w = self._w
-        save_config(self._config)
 
     # --- 그리기 ----------------------------------------------------------
 

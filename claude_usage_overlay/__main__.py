@@ -12,6 +12,7 @@ tkinter 창 조작은 메인 스레드에서만 한다. 폴러는 잠금으로 �
 import threading
 import tkinter as tk
 
+from . import font_install
 from .config import load_config
 from .credentials import CredentialStore
 from .overlay import Overlay
@@ -26,6 +27,11 @@ def main() -> None:
     # Tk()보다 먼저 불러야 한다. 이걸 빠뜨리면 Windows가 창을 비트맵 확대하고
     # 그 위에 Overlay가 dpi_scale()을 또 곱해 배율의 제곱만큼 커진다.
     enable_dpi_awareness()
+
+    # 설치된 Pretendard를 이 프로세스에 올린다. 이것도 Tk()보다 먼저다 —
+    # Tk는 시작할 때 글꼴 목록을 읽으므로, 나중에 올리면 이번 실행에서는
+    # 못 쓴다. 자세한 이유는 font_install.activate()의 주석에 있다.
+    font_install.activate()
 
     config = load_config()
 
