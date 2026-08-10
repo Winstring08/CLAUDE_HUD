@@ -100,6 +100,17 @@ def test_fill_colors_keep_white_text_readable():
         assert got >= MIN_FILL_CONTRAST, f"{fill} 위 흰 글자 대비가 {got:.1f}로 너무 낮다"
 
 
+def test_digits_are_antialiased():
+    """확정 사항이다. 켠 쪽과 끈 쪽을 트레이에 나란히 띄워 비교해 골랐다.
+
+    끄면 글자 픽셀이 검·흰 두 값만 남아 이미지 전체 색상 수가 한 자리로
+    떨어진다(실측: 끔 5색 · 켬 50색 안팎). 그 차이로 판정한다.
+    """
+    img = render_icon(state(Status.OK, 42.0), size=ICON)
+    tones = {img.getpixel((x, y))[:3] for y in range(ICON) for x in range(ICON)}
+    assert len(tones) > 20, f"색이 {len(tones)}가지뿐 — 안티앨리어싱이 꺼졌다"
+
+
 def test_digits_are_a_single_colour():
     """수위 경계에서 색을 뒤집지 않는다.
 
