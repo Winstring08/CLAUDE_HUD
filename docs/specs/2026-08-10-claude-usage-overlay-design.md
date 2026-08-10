@@ -147,6 +147,8 @@ Content-Type: application/json
 
 두 경우 모두 같은 예외를 쓰고 문구로 구분한다. UI가 두 상태를 다르게 다룰 이유가 없고, 사용자가 할 일만 다르다.
 
+**문구는 이 둘로 고정하고 원본 예외 텍스트를 붙이지 않는다.** 이 문자열은 그대로 `HudState.detail`이 되어 오버레이 둘째 줄과 트레이 툴팁으로 간다. 오버레이의 텍스트 예산은 164px인데 예외를 붙이면 183~614px이 되어 잘리고(`create_text`는 경고 없이 자른다), 트레이는 더 나쁘다 — Win32 `szTip`이 128 wchar 고정 버퍼라 129자에서 `ValueError`가 나고 그게 메인 스레드의 갱신 루프를 멈춘다. 진단에 필요한 원인은 `__cause__`에 남긴다.
+
 ### `usage_client.py`
 
 `fetch_usage(token) -> UsageSnapshot`. HTTP와 도메인의 경계다.
@@ -203,7 +205,7 @@ pystray 아이콘과 메뉴. pillow로 이미지를 그린다.
 
 ### `autostart.py`
 
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`의 `ClaudeUsageOverlay` 값을 읽고·쓰고·지운다. 인터페이스는 `is_enabled()` / `enable()` / `disable()` 넷이고, 트레이 메뉴의 체크 항목이 이것만 호출한다.
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`의 `ClaudeUsageOverlay` 값을 읽고·쓰고·지운다. 인터페이스는 `is_enabled()` / `enable()` / `disable()` 셋이고, 트레이 메뉴의 체크 항목이 이것만 호출한다.
 
 근거는 §9.2다.
 
@@ -220,12 +222,18 @@ pystray 아이콘과 메뉴. pillow로 이미지를 그린다.
                                           │
 [poller 스레드]  300초마다 토큰 재읽기 + 조회
        ↓
-  UsageSnapshot + Status ──(queue)──→ [메인 스레드] overlay + tray
+  HudState (잠금으로 보호된 최신 값 하나)
+       ↓ 1초마다 읽어 감
+[메인 스레드]  overlay + tray
+       ↑
+[트레이 스레드]  메뉴 조작 → after()로 메인 스레드에 넘김
 ```
 
 화살표가 파일 쪽으로 되돌아가지 않는다는 것이 이 그림의 요점이다. 이 도구는 `.credentials.json`에 쓰지 않는다.
 
-tkinter는 메인 스레드에서만 건드린다. poller는 큐로만 전달한다. 이 경계를 지키면 네트워크 대기 중에 UI가 멈추지 않는다.
+**poller는 스트림이 아니라 최신 상태 하나만 노출한다.** 큐를 쓰지 않는 이유는 UI가 과거 값을 소비할 이유가 없어서다 — 5분 동안 쌓인 스냅샷을 순서대로 그릴 일이 없고, 큐가 비었을 때 무엇을 그릴지 UI가 또 판단해야 한다. `HudState` 하나를 잠금으로 감싸고 메인 스레드가 1초마다 읽어 가면 그 판단이 사라진다.
+
+tkinter **창 조작**은 메인 스레드에서만 한다. 트레이 메뉴 콜백은 pystray 스레드에서 도는데, 거기서 창을 직접 건드리는 대신 `after()`로 메인 스레드에 넘긴다. 이 경계를 지키면 네트워크 대기 중에 UI가 멈추지 않는다.
 
 ## 7. 상태별 표시
 

@@ -115,7 +115,17 @@ dev = ["pytest>=8.0"]
 testpaths = ["tests"]
 ```
 
-- [ ] **Step 4: 실패하는 테스트 작성**
+- [ ] **Step 4: 의존성 설치**
+
+`pyproject.toml`에 적는 것과 실제로 깔리는 것은 다르다. 이 패키지는 어디에도 설치되지 않으므로(README는 `pip install pystray pillow`만 시킨다) 선언만으로는 아무것도 안 깔린다. **여기서 깔지 않으면 Task 9 Step 4(`test_icon_render` — `PIL` 필요)에서 멈춘다.**
+
+```bash
+pip install pystray pillow pytest
+```
+
+Expected: 성공. 이미 설치돼 있으면 `Requirement already satisfied`
+
+- [ ] **Step 5: 실패하는 테스트 작성**
 
 `tests/test_models.py`:
 
@@ -174,17 +184,17 @@ def test_rate_limited_carries_retry_after():
     assert err.retry_after == 287
 ```
 
-- [ ] **Step 5: 테스트 실패 확인**
+- [ ] **Step 6: 테스트 실패 확인**
 
 Run: `python -m pytest tests/test_models.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'claude_usage_overlay'`
 
-- [ ] **Step 6: `claude_usage_overlay/__init__.py` 작성 (빈 파일)**
+- [ ] **Step 7: `claude_usage_overlay/__init__.py` 작성 (빈 파일)**
 
 ```python
 ```
 
-- [ ] **Step 7: `claude_usage_overlay/models.py` 작성**
+- [ ] **Step 8: `claude_usage_overlay/models.py` 작성**
 
 ```python
 """도메인 타입과 예외. 다른 모든 모듈이 이 파일을 참조한다."""
@@ -244,12 +254,12 @@ class SchemaChanged(Exception):
     """응답 형식이 예상과 다르다. 숫자를 지어내지 않고 이 예외를 던진다."""
 ```
 
-- [ ] **Step 8: 테스트 통과 확인**
+- [ ] **Step 9: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_models.py -v`
 Expected: PASS (5 passed)
 
-- [ ] **Step 9: 커밋**
+- [ ] **Step 10: 커밋**
 
 ```bash
 git add pyproject.toml .gitignore claude_usage_overlay/ tests/
@@ -800,6 +810,22 @@ git commit -m "feat: 색 임계값과 한국어 문구 포맷터 추가"
 
 만료 마진(30분)은 두지 않는다. 갱신할 게 없으니 미리 알 이유가 없고, 마진만큼 멀쩡한 토큰을 버리게 된다.
 
+**예외 메시지를 화면 문구에 붙이지 않는다.** 이 문구는 `HudState.detail`이 되어 오버레이 둘째 줄과 트레이 툴팁에 그대로 간다. 원본 예외를 덧붙이면 둘 다 깨진다 — 실측:
+
+| | 길이 |
+|---|---|
+| 오버레이 둘째 줄 예산 | **164px** |
+| `claude auth login ('claudeAiOauth')` | 183px |
+| `claude auth login ('str' object has no attribute 'get')` | 266px |
+| `claude auth login (Expecting property name enclosed in ...)` | 493px |
+| `claude auth login ([Errno 2] No such file or directory: 'C:\Users\...')` | 614px |
+
+오버레이는 `create_text`가 조용히 잘라내는 것으로 끝나지만 **트레이는 그냥 끝나지 않는다.** Win32 `Shell_NotifyIcon`의 `szTip`은 128 wchar 고정 버퍼이고 pystray가 문자열을 그대로 넘기므로 **129자에서 `ValueError: string too long`이 난다**(실측). 그 예외는 `Tray.refresh_icon()`을 부르는 메인 스레드의 `pump()` 안에서 터져 다음 `root.after` 예약을 막고, **상태 갱신 루프가 통째로 멈춘다.** `pythonw`에는 콘솔이 없어 원인도 안 남는다. 파일 없음 문구는 이 PC(사용자명 5자)에서 124자로 여유가 4자뿐이라, 사용자명이 조금만 길어도 넘는다.
+
+그래서 화면 문구는 `RELOGIN_MSG`·`STALE_TOKEN_MSG` 두 상수로 고정하고, 원인은 `raise ... from err`의 `__cause__`에만 남긴다. 트레이 쪽에도 마지막 방어로 길이 제한을 둔다(Task 11).
+
+**만료 시각을 `int()`로 바꾸는 것도 `_read`와 같은 보호 안에 둔다.** `int(creds["expiresAt"])`가 `try` 밖에 있으면 값이 숫자가 아닐 때 `ValueError`가 새어 나가고, 폴러의 `except Exception`이 그걸 받아 **"N분째 갱신 실패"**를 띄운다. 파일 형식이 바뀐 것인데 화면은 네트워크 문제라고 말하는 셈이다. `claudeAiOauth`가 객체가 아닐 때를 막는 이유와 똑같다.
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `tests/test_credentials.py`:
@@ -809,7 +835,11 @@ import json
 
 import pytest
 
-from claude_usage_overlay.credentials import CredentialStore
+from claude_usage_overlay.credentials import (
+    RELOGIN_MSG,
+    STALE_TOKEN_MSG,
+    CredentialStore,
+)
 from claude_usage_overlay.models import ReloginRequired
 
 NOW_MS = 1_786_331_000_000
@@ -940,6 +970,52 @@ def test_missing_refresh_expiry_is_not_treated_as_expired(tmp_path):
     )
     store = CredentialStore(path=p, now_ms=lambda: NOW_MS)
     assert store.get_access_token() == "acc"
+
+
+def test_unreadable_expiry_does_not_look_like_a_network_failure(tmp_path):
+    """만료 시각이 숫자가 아니면 int()가 ValueError를 던진다.
+
+    그게 새어 나가면 폴러의 except Exception이 받아 "N분째 갱신 실패"를 띄운다.
+    파일 형식이 바뀐 것인데 화면은 인터넷 문제라고 말하게 된다.
+    """
+    p = tmp_path / ".credentials.json"
+    for broken in ("2026-08-10T20:22:39Z", [], {"ms": 1}):
+        for field in ("expiresAt", "refreshTokenExpiresAt"):
+            creds = {"accessToken": "acc", "expiresAt": NOW_MS + HOUR_MS}
+            creds[field] = broken
+            p.write_text(json.dumps({"claudeAiOauth": creds}), encoding="utf-8")
+            store = CredentialStore(path=p, now_ms=lambda: NOW_MS)
+            with pytest.raises(ReloginRequired):
+                store.get_access_token()
+
+
+def test_missing_expiry_is_treated_as_expired(tmp_path):
+    """expiresAt이 아예 없으면 유효하다고 볼 근거가 없다. 지어내지 않는다."""
+    p = tmp_path / ".credentials.json"
+    p.write_text(json.dumps({"claudeAiOauth": {"accessToken": "acc"}}), encoding="utf-8")
+    store = CredentialStore(path=p, now_ms=lambda: NOW_MS)
+    with pytest.raises(ReloginRequired):
+        store.get_access_token()
+
+
+def test_message_never_carries_the_raw_exception(tmp_path):
+    """이 문구는 그대로 오버레이 둘째 줄과 트레이 툴팁이 된다.
+
+    예외 텍스트를 붙이면 오버레이는 조용히 잘리고, 트레이는 128자(szTip)를
+    넘는 순간 ValueError를 던져 메인 스레드의 갱신 루프를 멈춘다.
+    원인은 화면이 아니라 __cause__에 남긴다.
+    """
+    p = tmp_path / ".credentials.json"
+    for broken in ("{ not json", json.dumps({"claudeAiOauth": "손상됨"})):
+        p.write_text(broken, encoding="utf-8")
+        store = CredentialStore(path=p, now_ms=lambda: NOW_MS)
+        with pytest.raises(ReloginRequired) as exc:
+            store.get_access_token()
+        assert str(exc.value) == RELOGIN_MSG
+        assert exc.value.__cause__ is not None      # 원인은 남아 있다
+
+    assert len(f"Claude 사용량\n{RELOGIN_MSG}") <= 128
+    assert len(f"Claude 사용량\n{STALE_TOKEN_MSG}") <= 128
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
@@ -1002,17 +1078,34 @@ class CredentialStore:
         creds = self._read()
         now = self._now_ms()
 
-        refresh_expires_at = creds.get("refreshTokenExpiresAt")
-        if refresh_expires_at is not None and int(refresh_expires_at) <= now:
+        refresh_expires_at = self._expiry_ms(creds.get("refreshTokenExpiresAt"))
+        if refresh_expires_at is not None and refresh_expires_at <= now:
             raise ReloginRequired(RELOGIN_MSG)
 
-        if int(creds.get("expiresAt") or 0) <= now:
+        expires_at = self._expiry_ms(creds.get("expiresAt"))
+        if expires_at is None or expires_at <= now:
             # refreshToken은 살아 있다. Claude Code를 한 번 쓰면 저절로 갱신된다.
             raise ReloginRequired(STALE_TOKEN_MSG)
 
         return creds["accessToken"]
 
     # --- 내부 ------------------------------------------------------------
+
+    @staticmethod
+    def _expiry_ms(value) -> int | None:
+        """만료 시각을 ms 정수로. 필드가 없으면 None.
+
+        숫자로 안 읽히면 파일이 우리가 아는 형식이 아니라는 뜻이므로
+        ReloginRequired로 바꾼다. 여기서 ValueError를 흘리면 폴러의
+        except Exception이 받아 "N분째 갱신 실패"를 띄우고, 사용자는
+        인터넷을 의심하며 진짜 원인을 못 본다. _read가 막는 구멍과 같다.
+        """
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError) as err:
+            raise ReloginRequired(RELOGIN_MSG) from err
 
     def _read(self) -> dict:
         # AttributeError까지 잡는 이유: claudeAiOauth 값이 객체가 아니면
@@ -1026,13 +1119,17 @@ class CredentialStore:
                 raise KeyError("accessToken missing")
             return creds
         except (OSError, json.JSONDecodeError, KeyError, TypeError, AttributeError) as err:
-            raise ReloginRequired(f"{RELOGIN_MSG} ({err})") from err
+            # 원인을 문구에 붙이지 않는다. 이 문자열은 그대로 오버레이 둘째 줄과
+            # 트레이 툴팁이 되는데, 붙이면 오버레이는 조용히 잘리고 툴팁은
+            # 128자(szTip)를 넘는 순간 ValueError로 갱신 루프를 멈춘다.
+            # 진단에 필요한 원인은 __cause__에 그대로 남는다.
+            raise ReloginRequired(RELOGIN_MSG) from err
 ```
 
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_credentials.py -v`
-Expected: PASS (10 passed)
+Expected: PASS (13 passed)
 
 - [ ] **Step 5: 커밋**
 
@@ -2427,6 +2524,8 @@ git commit -m "feat: 수위 반전 숫자 트레이 아이콘 렌더러 추가"
 2. **글꼴 크기는 픽셀(음수)로 지정한 뒤 곱한다.** 포인트(양수)로 주면 안 된다 — Task 8에 실측을 적었듯 `tk scaling`이 포인트를 이미 DPI로 확대하므로, 거기에 또 곱하면 150%에서 글자만 1.6배 커진다. 이 규칙을 한 곳에 가두는 것이 `fonts_for()`다.
 3. 저장된 위치가 지금 화면에 없으면 기본 위치로 되돌린다. 보조 모니터에 창을 두고 케이블을 뽑으면 창을 되찾을 방법이 없어지기 때문이다.
 
+**`show()`·`hide()`·`is_visible()`은 메인 스레드에서 불리지 않는다.** 이 셋의 유일한 호출자가 트레이 메뉴이고, pystray 메뉴 콜백과 메뉴 문구 람다는 pystray 스레드에서 돈다. 그래서 창 조작은 `after(0, ...)`로 메인 스레드에 넘기고, 표시 여부는 Tk에 묻지 않고 파이썬 속성으로 들고 있는다. `is_visible()`은 반환값이 필요해 비동기로 넘길 수 없으므로 애초에 Tk를 안 부르게 만드는 쪽이 맞다.
+
 **창 폭은 가장 긴 문구에서 역산한 값이다.** 스펙 7장이 정한 다섯 상태의 문구 중 최장은 `RELOGIN`의 뒷줄 "Claude Code를 한 번 실행하세요"로, 11px Segoe UI에서 163px이다. 여기에 텍스트 시작점 66px와 오른쪽 여백 10px를 더해 `BASE_WIDTH = 240`이 나온다.
 
 폭을 눈대중으로 고르면 안 되는 이유는 `create_text`에 `width` 옵션이 없어 **글자가 캔버스 밖으로 그냥 잘려 나가기 때문이다.** 경고도 예외도 없다. 그리고 하필 넘치는 것이 사용자가 조치해야 하는 `RELOGIN`·`RATE_LIMITED` 두 상태다 — 무엇을 하라는 안내가 잘리면 그 상태를 표시하는 의미가 없어진다.
@@ -2539,27 +2638,38 @@ class Overlay:
             widget.bind("<ButtonRelease-1>", self._on_release)
 
         self._state = HudState(Status.STALE, None, "불러오는 중")
-        if not config.overlay_visible:
+        self._visible = config.overlay_visible
+        if not self._visible:
             self._win.withdraw()
         self._tick()
 
     # --- 공개 인터페이스 -------------------------------------------------
+    #
+    # show/hide/is_visible은 **트레이 메뉴에서 불린다 — 즉 pystray 스레드다.**
+    # tkinter 창 조작은 메인 스레드 몫이므로 여기서 직접 하지 않고 after()로
+    # 넘긴다. 표시 여부도 Tk에 묻지 않고 우리가 들고 있는다.
 
     def update(self, state: HudState) -> None:
         self._state = state
 
     def show(self) -> None:
-        self._win.deiconify()
-        self._config.overlay_visible = True
-        save_config(self._config)
+        self._set_visible(True)
 
     def hide(self) -> None:
-        self._win.withdraw()
-        self._config.overlay_visible = False
-        save_config(self._config)
+        self._set_visible(False)
 
     def is_visible(self) -> bool:
-        return self._win.state() != "withdrawn"
+        """Tk에 묻지 않는다. 트레이 메뉴 문구를 그릴 때마다 불리는 함수라
+        pystray 스레드에서 Tk를 건드리게 된다."""
+        return self._visible
+
+    def _set_visible(self, visible: bool) -> None:
+        """after()는 콜백을 tkinter 이벤트 큐에 넣을 뿐이고,
+        실제 withdraw/deiconify는 메인 스레드의 mainloop가 실행한다."""
+        self._visible = visible
+        self._config.overlay_visible = visible
+        save_config(self._config)
+        self._win.after(0, self._win.deiconify if visible else self._win.withdraw)
 
     # --- 위치 ------------------------------------------------------------
 
@@ -2679,6 +2789,10 @@ class Overlay:
 창을 띄우지 않는다. 글꼴 폭만 재므로 UI 테스트가 아니다.
 이게 없으면 문구를 한 글자 늘렸을 때 조용히 잘리고, 하필 잘리는 것이
 사용자가 조치해야 하는 RELOGIN·RATE_LIMITED 상태다.
+
+**RELOGIN 문구는 리터럴로 베끼지 않고 credentials에서 가져온다.** 손으로
+베끼면 문구가 바뀌었을 때 테스트만 옛날 것을 재고, 정작 화면에 가는
+문자열은 아무도 안 잰다.
 """
 
 import tkinter as tk
@@ -2687,21 +2801,28 @@ import tkinter.font as tkfont
 import pytest
 
 from claude_usage_overlay import overlay as ov
+from claude_usage_overlay.credentials import RELOGIN_MSG, STALE_TOKEN_MSG
+
+# RELOGIN detail은 "제목 — 할 일" 한 문자열이고 오버레이가 두 줄로 쪼갠다.
+RELOGIN_HEADS = [m.partition(" — ")[0] for m in (RELOGIN_MSG, STALE_TOKEN_MSG)]
+RELOGIN_TAILS = [m.partition(" — ")[2] for m in (RELOGIN_MSG, STALE_TOKEN_MSG)]
 
 # 스펙 7장의 다섯 상태에 실제로 들어가는 문구 전부.
 # 문구를 늘리려면 여기도 늘리고, 테스트가 통과하는지 본다.
+#
+# snapshot이 없을 때는 detail이 **첫 줄**에 그려진다. 그래서 폴러가 만드는
+# detail 문구가 line2가 아니라 line1 목록에 들어간다 — 글꼴이 1px 더 크다.
 LINE1 = [
     "10시간 14분 후 리셋",   # format_countdown 최장
     "곧 리셋",
     "—",
-    "불러오는 중",
+    "불러오는 중",              # 폴러 초기 상태
+    "아직 데이터가 없습니다",    # 한 번도 성공하지 못한 채 실패
+    "인증 재시도 중",           # 401 유예 구간
     "데이터 형식이 바뀜",
-    "토큰 만료",              # RELOGIN detail의 앞부분
-    "재로그인 필요",
-]
-LINE2 = [
-    "Claude Code를 한 번 실행하세요",   # RELOGIN detail의 뒷부분 — 최장
-    "claude auth login",
+    "호출 한도 — 잠시 후 재시도",   # 첫 조회부터 429면 이것도 첫 줄에 온다
+] + RELOGIN_HEADS
+LINE2 = RELOGIN_TAILS + [
     "호출 한도 — 잠시 후 재시도",
     "120분째 갱신 실패",
     "23시간 전 갱신",
@@ -2750,7 +2871,7 @@ def test_font_sizes_scale_with_dpi():
 ```
 
 Run: `python -m pytest tests/test_overlay_layout.py -v`
-Expected: PASS (15 passed)
+Expected: PASS (18 passed)
 
 - [ ] **Step 2: 임시 확인 스크립트로 창을 띄워본다**
 
@@ -2845,6 +2966,10 @@ git commit -m "feat: 링 게이지 오버레이 창 추가"
 | 비교 후 갱신 | **`icon` 6회 · `title` 60회** |
 
 **툴팁이 그림보다 열 배 자주 바뀌는 것은 정상이다.** 툴팁에는 `format_countdown`과 `format_age`가 들어 있고 둘 다 분 단위라, 서로 다른 분 경계에서 각각 한 번씩 — 30분에 60번 — 문자열이 달라진다. 여전히 1,800 → 60이므로 비교는 제값을 한다. 툴팁까지 초 단위로 만들면 이 60이 1,800으로 돌아간다.
+
+**툴팁 길이에는 하드 한도가 있다.** Win32 `Shell_NotifyIcon`의 `szTip`은 128 wchar 고정 버퍼이고 pystray가 문자열을 그대로 구조체에 넣으므로, **129자에서 `ValueError: string too long`이 난다**(실측). 이 예외가 위험한 건 터지는 위치 때문이다 — `refresh_icon()`은 메인 스레드의 `pump()`가 부르고, `pump()`는 마지막 줄에서 다음 `root.after`를 예약한다. 중간에서 예외가 나면 **그 예약이 안 되고 상태 갱신이 영구히 멈춘다.** 오버레이는 자기 `_tick`으로 계속 그리므로 화면은 살아 있는데 값만 그 시점에 얼어붙고, `pythonw`에는 콘솔이 없어 스택트레이스도 안 남는다.
+
+근본 대책은 `credentials`가 예외 텍스트를 문구에 안 붙이는 것이고(Task 5), `_clip()`은 그 위의 마지막 방어다. 둘 다 둔다 — 조용히 멈추는 실패는 한 겹으로 막지 않는다.
 
 `icon_key()`를 모듈 함수로 빼는 이유는 이 판정이 `Tray`를 만들지 않고 테스트할 수 있어야 하기 때문이다. `pystray.Icon` 생성에는 트레이가 있는 세션이 필요하다.
 
@@ -3023,6 +3148,20 @@ from .models import HudState, Status
 
 STALE_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
 
+# Win32 Shell_NotifyIcon의 szTip은 128 wchar 고정 버퍼다. pystray가 문자열을
+# 그대로 구조체에 넣으므로 129자에서 `ValueError: string too long`이 난다.
+# 그 예외는 refresh_icon()을 부르는 메인 스레드의 pump() 안에서 터져 다음
+# root.after 예약을 막고 상태 갱신을 통째로 멈춘다 — pythonw에는 콘솔이
+# 없어 원인도 안 남는다. 문구는 우리가 고정 상수로 통제하지만(credentials가
+# 예외 텍스트를 붙이지 않는다), 마지막 방어를 여기 둔다.
+TOOLTIP_LIMIT = 128
+
+
+def _clip(text: str) -> str:
+    if len(text) <= TOOLTIP_LIMIT:
+        return text
+    return text[: TOOLTIP_LIMIT - 1] + "…"
+
 
 def icon_key(state: HudState) -> tuple:
     """아이콘 그림이 달라지는 조건. 이 값이 그대로면 다시 그릴 필요가 없다.
@@ -3037,7 +3176,7 @@ def icon_key(state: HudState) -> tuple:
 def _tooltip(state: HudState) -> str:
     if state.snapshot is None:
         # RELOGIN·SCHEMA_ERROR 모두 여기로 온다. 문구는 만든 쪽이 정한다.
-        return f"Claude 사용량\n{state.detail or '불러오는 중'}"
+        return _clip(f"Claude 사용량\n{state.detail or '불러오는 중'}")
 
     now = datetime.now(timezone.utc)
     snap = state.snapshot
@@ -3050,7 +3189,7 @@ def _tooltip(state: HudState) -> str:
     lines.append(
         state.detail if state.status in STALE_STATUSES else format_age(snap.fetched_at, now)
     )
-    return "\n".join(lines)
+    return _clip("\n".join(lines))
 
 
 class Tray:
@@ -3151,7 +3290,7 @@ class Tray:
 from datetime import datetime, timedelta, timezone
 
 from claude_usage_overlay.models import HudState, Status, UsageSnapshot
-from claude_usage_overlay.tray import _tooltip, icon_key
+from claude_usage_overlay.tray import TOOLTIP_LIMIT, _tooltip, icon_key
 
 NOW = datetime(2026, 8, 10, 3, 25, tzinfo=timezone.utc)
 
@@ -3192,15 +3331,28 @@ def test_tooltip_without_a_snapshot_shows_the_detail():
     """RELOGIN·SCHEMA_ERROR·첫 조회 전이 모두 여기로 온다."""
     text = _tooltip(HudState(Status.RELOGIN, None, "재로그인 필요 — claude auth login"))
     assert "claude auth login" in text
+
+
+def test_tooltip_never_exceeds_the_win32_buffer():
+    """szTip은 128 wchar 고정이다. 넘기면 pystray가 ValueError를 던지고,
+    그게 메인 스레드의 pump() 안에서 터져 갱신 루프가 통째로 멈춘다."""
+    long_detail = "재로그인 필요 — " + "가" * 300
+    for state in (
+        HudState(Status.RELOGIN, None, long_detail),
+        HudState(Status.STALE, UsageSnapshot(23.0, NOW, 15.0, NOW), long_detail),
+    ):
+        assert len(_tooltip(state)) <= TOOLTIP_LIMIT
 ```
 
 Run: `python -m pytest tests/test_tray.py -v`
-Expected: PASS (7 passed)
+Expected: PASS (8 passed)
 
-- [ ] **Step 6: 의존성 설치 확인**
+- [ ] **Step 6: 의존성 확인**
 
-Run: `pip install pystray pillow`
-Expected: 성공. 이미 설치돼 있으면 `Requirement already satisfied`
+설치는 Task 1 Step 4에서 이미 했다. 여기서는 import만 확인한다.
+
+Run: `python -c "import pystray, PIL; print('ok')"`
+Expected: `ok`
 
 - [ ] **Step 7: 전체 테스트 실행**
 
@@ -3226,7 +3378,9 @@ git commit -m "feat: 트레이 아이콘과 시작 프로그램 등록 추가"
 - Consumes: 앞선 모든 모듈
 - Produces: `python -m claude_usage_overlay`로 실행되는 프로그램
 
-**스레드 배치:** tkinter는 메인 스레드에서만 건드린다. 폴러는 자기 스레드에서 돌고, pystray도 자기 스레드에서 돈다. 메인 스레드는 tkinter `after` 루프로 1초마다 폴러 상태를 읽어 오버레이와 트레이에 전달한다.
+**스레드 배치:** tkinter **창 조작**은 메인 스레드에서만 한다. 폴러는 자기 스레드에서 돌고, pystray도 자기 스레드에서 돈다. 메인 스레드는 tkinter `after` 루프로 1초마다 폴러 상태를 읽어 오버레이와 트레이에 전달한다.
+
+트레이 메뉴 콜백은 pystray 스레드에서 실행되므로 `Overlay.show()`·`hide()`가 거기서 불린다. 그래서 그 둘은 창을 직접 건드리지 않고 `after(0, ...)`로 메인 스레드에 넘기고, `is_visible()`은 Tk에 묻지 않는다(Task 10). 폴러가 UI 쪽으로 넘기는 것도 잠금으로 보호된 `state()` 하나뿐이다.
 
 - [ ] **Step 1: `claude_usage_overlay/__main__.py` 작성**
 
@@ -3238,7 +3392,8 @@ git commit -m "feat: 트레이 아이콘과 시작 프로그램 등록 추가"
   폴러 스레드   5분마다 API 조회
   트레이 스레드 pystray 이벤트 루프
 
-tkinter는 메인 스레드에서만 건드린다. 폴러는 잠금으로 보호된 state()만 노출한다.
+tkinter 창 조작은 메인 스레드에서만 한다. 폴러는 잠금으로 보호된 state()만
+노출하고, 트레이 메뉴는 Overlay가 after()로 넘겨준 것만 창에 반영시킨다.
 """
 
 import threading
@@ -3273,10 +3428,16 @@ def main() -> None:
     threading.Thread(target=tray.run, daemon=True).start()
 
     def pump() -> None:
-        state = poller.state()
-        overlay.update(state)
-        tray.refresh_icon()
-        root.after(PUMP_INTERVAL_MS, pump)
+        try:
+            state = poller.state()
+            overlay.update(state)
+            tray.refresh_icon()
+        finally:
+            # 재예약을 finally에 둔다. 이 줄에 도달하지 못하면 다음 after가
+            # 안 걸리고 상태 갱신이 **영구히** 멈춘다 — 오버레이는 자기 _tick으로
+            # 계속 그리므로 화면은 살아 있는 채 값만 얼어붙고, pythonw에는
+            # 콘솔이 없어 아무도 원인을 못 본다.
+            root.after(PUMP_INTERVAL_MS, pump)
 
     root.after(PUMP_INTERVAL_MS, pump)
     root.mainloop()
