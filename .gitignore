@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# 브레인스토밍 목업 (로컬 참고용)
+.superpowers/
+
+# Claude Code 로컬 설정
+.claude/settings.local.json
