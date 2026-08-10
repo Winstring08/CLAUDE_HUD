@@ -53,6 +53,7 @@ tests/
   test_theme.py         test_formatting.py    test_credentials.py
   test_usage_client.py  test_poller.py        test_winmetrics.py
   test_icon_render.py   test_autostart.py     test_tray.py
+  test_overlay_layout.py
 pyproject.toml
 ```
 
@@ -1873,6 +1874,16 @@ git commit -m "feat: 백오프와 상태 판정을 담당하는 폴러 추가"
 
 마지막 항목이 없으면 `dpi_scale()`을 곱하는 것이 오히려 해가 된다. DPI 비인식 프로세스의 창은 Windows가 통째로 비트맵 확대하므로, 우리가 치수에 배율을 곱하면 **확대가 두 번 걸려 배율의 제곱만큼 커진다**(150%면 2.25배). `Tk()`를 만들기 전에 이 함수를 부르면 Windows가 확대를 멈추고 우리 곱셈만 남는다.
 
+**단 그 "우리 곱셈만 남는다"는 픽셀 단위 치수에만 해당한다. 글꼴은 예외다.** DPI 인식을 켜는 순간 Tk의 `tk scaling`도 실제 DPI를 따라가므로 **포인트 단위 글꼴 크기는 Tk가 이미 배율을 반영한다.** 거기에 `dpi_scale()`을 또 곱하면 글자만 이중 확대된다. 실측(`tk scaling`을 144 DPI 값으로 두고 잰 것):
+
+| | linespace |
+|---|---|
+| 96 DPI에서 `10pt` | 17px |
+| 144 DPI에서 `10pt` (Tk가 알아서 확대) | 28px |
+| 144 DPI에서 `15pt` (= `round(10 × 1.5)`, 우리가 또 곱한 것) | **41px** |
+
+기대값은 17 × 1.5 ≈ 26px인데 41px이 나온다 — 약 1.6배 과대다. 캔버스 치수는 픽셀이라 곱셈이 맞으므로 **창은 제 크기인데 글자만 넘친다.** 대응은 Task 10의 `fonts_for()`에 있다 — 글꼴을 픽셀(음수) 단위로 지정하면 `tk scaling`에 흔들리지 않고 캔버스와 같은 배율로 커진다.
+
 ctypes로 Windows API를 부르는 부분은 얇게 두고, **판정 로직인 `is_position_visible`만 순수 함수로 빼서 테스트한다.**
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -2399,22 +2410,30 @@ git commit -m "feat: 수위 반전 숫자 트레이 아이콘 렌더러 추가"
 
 **Files:**
 - Create: `claude_usage_overlay/overlay.py`
+- Test: `tests/test_overlay_layout.py`
 
 **Interfaces:**
 - Consumes: `models.HudState`, `models.Status`, `theme.*`, `formatting.format_countdown`, `formatting.format_age`, `config.Config`, `config.save_config`, `winmetrics.dpi_scale`, `winmetrics.virtual_screen_rect`, `winmetrics.is_position_visible`
 - Produces: `Overlay(root: tkinter.Tk, config: Config)`,
-  메서드 `update(state: HudState) -> None`, `show() -> None`, `hide() -> None`, `is_visible() -> bool`
+  메서드 `update(state: HudState) -> None`, `show() -> None`, `hide() -> None`, `is_visible() -> bool`,
+  모듈 함수 `fonts_for(scale: float) -> dict[str, tuple]` (순수 함수),
+  상수 `BASE_WIDTH`, `BASE_TEXT_X`, `BASE_RIGHT_MARGIN`, `BASE_FONT_PCT_PX`, `BASE_FONT_LINE1_PX`, `BASE_FONT_LINE2_PX`
 
 **확정 사항:** 링 게이지 + 텍스트 2줄. 무테두리 · 반투명(alpha 0.82) · 항상 위 · 드래그 이동. 창 위치는 드래그를 놓을 때 설정에 저장한다.
 
-**이식성 요구 두 가지:**
+**이식성 요구 세 가지:**
 
-1. 모든 치수와 글꼴 크기에 `winmetrics.dpi_scale()`을 곱한다. 배율 150% PC에서 창이 절반 크기로 보이면 안 된다.
-2. 저장된 위치가 지금 화면에 없으면 기본 위치로 되돌린다. 보조 모니터에 창을 두고 케이블을 뽑으면 창을 되찾을 방법이 없어지기 때문이다.
+1. 모든 **픽셀 치수**에 `winmetrics.dpi_scale()`을 곱한다. 배율 150% PC에서 창이 절반 크기로 보이면 안 된다.
+2. **글꼴 크기는 픽셀(음수)로 지정한 뒤 곱한다.** 포인트(양수)로 주면 안 된다 — Task 8에 실측을 적었듯 `tk scaling`이 포인트를 이미 DPI로 확대하므로, 거기에 또 곱하면 150%에서 글자만 1.6배 커진다. 이 규칙을 한 곳에 가두는 것이 `fonts_for()`다.
+3. 저장된 위치가 지금 화면에 없으면 기본 위치로 되돌린다. 보조 모니터에 창을 두고 케이블을 뽑으면 창을 되찾을 방법이 없어지기 때문이다.
+
+**창 폭은 가장 긴 문구에서 역산한 값이다.** 스펙 7장이 정한 다섯 상태의 문구 중 최장은 `RELOGIN`의 뒷줄 "Claude Code를 한 번 실행하세요"로, 11px Segoe UI에서 163px이다. 여기에 텍스트 시작점 66px와 오른쪽 여백 10px를 더해 `BASE_WIDTH = 240`이 나온다.
+
+폭을 눈대중으로 고르면 안 되는 이유는 `create_text`에 `width` 옵션이 없어 **글자가 캔버스 밖으로 그냥 잘려 나가기 때문이다.** 경고도 예외도 없다. 그리고 하필 넘치는 것이 사용자가 조치해야 하는 `RELOGIN`·`RATE_LIMITED` 두 상태다 — 무엇을 하라는 안내가 잘리면 그 상태를 표시하는 의미가 없어진다.
 
 **1초마다 다시 그리지만 네트워크는 건드리지 않는다.** 카운트다운은 `resets_at`에서 로컬 계산한다.
 
-UI라 자동 테스트하지 않는다. Step 4의 수동 검증 목록으로 확인한다.
+창을 띄우고 눈으로 보는 확인은 Step 4의 수동 검증 목록으로 한다. **다만 "문구가 창에 들어가는가"는 자동으로 잰다** — 글꼴 폭 측정은 창을 띄우지 않으므로 UI 테스트가 아니고, 문구를 한 글자 늘렸을 때 조용히 잘리는 것을 사람 눈에만 맡길 수 없다.
 
 - [ ] **Step 1: `claude_usage_overlay/overlay.py` 작성**
 
@@ -2424,7 +2443,8 @@ UI라 자동 테스트하지 않는다. Step 4의 수동 검증 목록으로 확
 1초마다 다시 그리지만 네트워크는 부르지 않는다. 카운트다운은
 resets_at에서 로컬로 계산한다. 화면은 매초 살아 움직이고 API는 5분에 한 번만.
 
-모든 치수는 기준값 × DPI 배율이다. 배율 150% PC에서도 같은 크기로 보인다.
+모든 픽셀 치수는 기준값 × DPI 배율이다. 배율 150% PC에서도 같은 크기로 보인다.
+글꼴만 규칙이 다르다 — fonts_for()의 주석을 보라.
 """
 
 import tkinter as tk
@@ -2436,16 +2456,48 @@ from .formatting import format_age, format_countdown
 from .models import HudState, Status
 from .winmetrics import dpi_scale, is_position_visible, virtual_screen_rect
 
-BASE_WIDTH, BASE_HEIGHT = 186, 62
+# 폭 240은 눈대중이 아니라 역산이다. 가장 긴 문구인 RELOGIN 뒷줄
+# "Claude Code를 한 번 실행하세요"가 11px Segoe UI에서 163px이고,
+# BASE_TEXT_X(66) + 163 + BASE_RIGHT_MARGIN(10) = 239다.
+# create_text에는 width 옵션이 없어 넘치면 경고 없이 잘린다.
+# tests/test_overlay_layout.py가 이 여유를 지킨다.
+BASE_WIDTH, BASE_HEIGHT = 240, 62
 BASE_RING_BOX = (12, 12, 54, 54)   # x0, y0, x1, y1
 BASE_RING_WIDTH = 5
 BASE_TEXT_X = 66
 BASE_LINE1_Y, BASE_LINE2_Y = 24, 40
+BASE_RIGHT_MARGIN = 10
 MARGIN = 24
 ALPHA = 0.82
 
+# 글꼴 크기는 픽셀이다. 음수로 넘긴다 (Tk 규약: 음수 = 픽셀, 양수 = 포인트).
+BASE_FONT_PCT_PX = 13
+BASE_FONT_LINE1_PX = 12
+BASE_FONT_LINE2_PX = 11
+
 # 값이 낡은 상태. 아이콘과 같은 기준을 쓴다.
 DIM_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
+
+
+def fonts_for(scale: float) -> dict[str, tuple]:
+    """글꼴 크기를 **픽셀**로 만든다. Tk에서 음수 = 픽셀, 양수 = 포인트다.
+
+    포인트로 주면 안 된다. enable_dpi_awareness()를 켜는 순간 Tk의
+    `tk scaling`이 실제 DPI를 따라가고, 포인트→픽셀 환산이 이미 배율을
+    반영한다. 거기에 dpi_scale()을 또 곱하면 확대가 두 번 걸린다 —
+    144 DPI에서 10pt는 28px인데 round(10 × 1.5) = 15pt를 주면 41px이 되어
+    기대값 26px의 약 1.6배가 된다. 캔버스 치수는 픽셀이라 곱셈이 맞으므로
+    창은 제 크기인데 글자만 넘쳐 잘린다.
+
+    픽셀 크기는 tk scaling에 흔들리지 않는다(실측: scaling 1.333과 2.0에서
+    -13px 모두 linespace 17px). 그래서 여기서만 배율을 곱하면 되고,
+    캔버스 치수와 정확히 같은 비율로 커진다.
+    """
+    return {
+        "pct": ("Segoe UI", -round(BASE_FONT_PCT_PX * scale), "bold"),
+        "line1": ("Segoe UI", -round(BASE_FONT_LINE1_PX * scale)),
+        "line2": ("Segoe UI", -round(BASE_FONT_LINE2_PX * scale)),
+    }
 
 
 class Overlay:
@@ -2461,9 +2513,10 @@ class Overlay:
         self._text_x = round(BASE_TEXT_X * s)
         self._line1_y = round(BASE_LINE1_Y * s)
         self._line2_y = round(BASE_LINE2_Y * s)
-        self._font_pct = ("Segoe UI", max(8, round(10 * s)), "bold")
-        self._font_line1 = ("Segoe UI", max(7, round(9 * s)))
-        self._font_line2 = ("Segoe UI", max(6, round(8 * s)))
+        fonts = fonts_for(s)
+        self._font_pct = fonts["pct"]
+        self._font_line1 = fonts["line1"]
+        self._font_line2 = fonts["line2"]
 
         self._win = tk.Toplevel(root)
         self._win.overrideredirect(True)          # 테두리 제거
@@ -2616,6 +2669,89 @@ class Overlay:
             )
 ```
 
+- [ ] **Step 1b: `tests/test_overlay_layout.py` 작성**
+
+창을 띄우지 않고 글꼴 폭만 잰다. `create_text`가 넘치는 글자를 경고 없이 잘라내므로, 이걸 사람 눈에만 맡기면 문구를 한 글자 늘렸을 때 조용히 깨진다.
+
+```python
+"""오버레이에 그려질 문구가 창 안에 실제로 들어가는지 잰다.
+
+창을 띄우지 않는다. 글꼴 폭만 재므로 UI 테스트가 아니다.
+이게 없으면 문구를 한 글자 늘렸을 때 조용히 잘리고, 하필 잘리는 것이
+사용자가 조치해야 하는 RELOGIN·RATE_LIMITED 상태다.
+"""
+
+import tkinter as tk
+import tkinter.font as tkfont
+
+import pytest
+
+from claude_usage_overlay import overlay as ov
+
+# 스펙 7장의 다섯 상태에 실제로 들어가는 문구 전부.
+# 문구를 늘리려면 여기도 늘리고, 테스트가 통과하는지 본다.
+LINE1 = [
+    "10시간 14분 후 리셋",   # format_countdown 최장
+    "곧 리셋",
+    "—",
+    "불러오는 중",
+    "데이터 형식이 바뀜",
+    "토큰 만료",              # RELOGIN detail의 앞부분
+    "재로그인 필요",
+]
+LINE2 = [
+    "Claude Code를 한 번 실행하세요",   # RELOGIN detail의 뒷부분 — 최장
+    "claude auth login",
+    "호출 한도 — 잠시 후 재시도",
+    "120분째 갱신 실패",
+    "23시간 전 갱신",
+    "방금 갱신됨",
+]
+
+
+@pytest.fixture(scope="module")
+def root():
+    r = tk.Tk()
+    r.withdraw()
+    yield r
+    r.destroy()
+
+
+def _fits(root, px, text):
+    font = tkfont.Font(root=root, family="Segoe UI", size=-px)
+    used = ov.BASE_TEXT_X + font.measure(text) + ov.BASE_RIGHT_MARGIN
+    return used <= ov.BASE_WIDTH, used
+
+
+@pytest.mark.parametrize("text", LINE1)
+def test_line1_fits(root, text):
+    ok, used = _fits(root, ov.BASE_FONT_LINE1_PX, text)
+    assert ok, f"{used}px 필요 / 창 폭 {ov.BASE_WIDTH}px — {text!r}"
+
+
+@pytest.mark.parametrize("text", LINE2)
+def test_line2_fits(root, text):
+    ok, used = _fits(root, ov.BASE_FONT_LINE2_PX, text)
+    assert ok, f"{used}px 필요 / 창 폭 {ov.BASE_WIDTH}px — {text!r}"
+
+
+def test_font_sizes_are_pixels_not_points():
+    """Tk에서 양수 크기는 포인트다. 포인트는 tk scaling이 이미 DPI로
+    확대하므로, 거기에 dpi_scale()을 또 곱하면 고배율에서 이중 확대된다."""
+    assert all(spec[1] < 0 for spec in ov.fonts_for(1.0).values())
+    assert all(spec[1] < 0 for spec in ov.fonts_for(1.5).values())
+
+
+def test_font_sizes_scale_with_dpi():
+    """캔버스 치수와 같은 배율로 커져야 글자가 창을 넘지 않는다."""
+    base, high = ov.fonts_for(1.0), ov.fonts_for(1.5)
+    for key in base:
+        assert high[key][1] == -round(-base[key][1] * 1.5)
+```
+
+Run: `python -m pytest tests/test_overlay_layout.py -v`
+Expected: PASS (15 passed)
+
 - [ ] **Step 2: 임시 확인 스크립트로 창을 띄워본다**
 
 `scratch_overlay.py` (커밋하지 않는다):
@@ -2664,18 +2800,19 @@ Run: `python scratch_overlay.py`
 - [ ] `Status.SCHEMA_ERROR` + `snapshot=None`으로 바꾸면 링이 비고 "데이터 형식이 바뀜"이 뜬다
 - [ ] `HudState(Status.RELOGIN, None, "재로그인 필요 — claude auth login")`으로 바꾸면 두 줄로 나뉘어 표시된다
 - [ ] `HudState(Status.RELOGIN, None, "토큰 만료 — Claude Code를 한 번 실행하세요")`도 두 줄로 나뉜다
+- [ ] **위 두 RELOGIN 문구와 `RATE_LIMITED`의 "호출 한도 — 잠시 후 재시도"가 오른쪽에서 잘리지 않는다.** 가장 긴 문구들이고, 잘려도 예외가 나지 않아 눈으로만 잡힌다
 - [ ] `UsageSnapshot`의 `resets_at`을 `None`으로 주면 첫 줄이 `—`가 되고 링과 숫자는 정상이다
 
 이식성 확인 두 가지:
 
 - [ ] `Config(x=99999, y=99999)`로 띄우면 화면 밖이 아니라 **오른쪽 위 기본 위치**에 뜬다
-- [ ] Windows 설정에서 배율을 150%로 바꾸고 로그아웃/로그인 후 다시 띄우면, 창과 글자가 100%일 때와 **같은 물리적 크기**로 보인다 (확인 후 배율을 원래대로 되돌린다)
+- [ ] Windows 설정에서 배율을 150%로 바꾸고 로그아웃/로그인 후 다시 띄우면, 창과 글자가 100%일 때와 **같은 물리적 크기**로 보인다 (확인 후 배율을 원래대로 되돌린다). **글자만 창보다 크게 튀어나오면** `fonts_for()`가 포인트로 되돌아간 것이다
 
 - [ ] **Step 4: 확인 스크립트 삭제 후 커밋**
 
 ```bash
 rm scratch_overlay.py
-git add claude_usage_overlay/overlay.py
+git add claude_usage_overlay/overlay.py tests/test_overlay_layout.py
 git commit -m "feat: 링 게이지 오버레이 창 추가"
 ```
 
@@ -2698,14 +2835,16 @@ git commit -m "feat: 링 게이지 오버레이 창 추가"
 **툴팁 내용 (스펙 4장):** 5시간 사용률 · 리셋 카운트다운 · 7일 사용률 · 갱신 시각
 **메뉴 (스펙 4장):** 오버레이 숨기기/보이기 · 지금 갱신 · 시작할 때 자동 실행(체크) · 설정 파일 열기 · 종료
 
-**바뀐 것만 트레이에 밀어 넣는다.** 메인 스레드가 `refresh_icon()`을 1초마다 부르는데, pystray의 Win32 백엔드는 `icon`·`title` 세터마다 HICON을 새로 만들고 `Shell_NotifyIcon`을 호출한다. 무조건 갱신하면 하루 86,400회다. 그림은 `(상태, 반올림한 사용률)`이 바뀔 때만 다시 그리면 되고 — 사용률이 1% 움직이는 데 보통 몇 분 걸린다 — 툴팁은 문자열이 실제로 달라질 때만 밀면 된다. 카운트다운이 분 단위라 실질적으로 분당 한 번이다.
+**바뀐 것만 트레이에 밀어 넣는다.** 메인 스레드가 `refresh_icon()`을 1초마다 부르는데, pystray의 Win32 백엔드는 `icon`·`title` 세터마다 HICON을 새로 만들고 `Shell_NotifyIcon`을 호출한다. 무조건 갱신하면 하루 86,400회다. 그림은 `(상태, 반올림한 사용률)`이 바뀔 때만 다시 그리면 되고 — 사용률이 1% 움직이는 데 보통 몇 분 걸린다 — 툴팁은 문자열이 실제로 달라질 때만 밀면 된다.
 
-가짜 `Icon`으로 30분치(1,800틱)를 돌려 실측한 결과다. 사용률이 5분에 1%씩 오르는 조건이다.
+30분치(1,800틱)를 돌려 실측한 결과다. 5분마다 폴링해 `fetched_at`이 갱신되고 사용률이 1%씩 오르는 조건이다.
 
 | | 세터 호출 |
 |---|---|
 | 무조건 갱신 | `icon` 1,800회 · `title` 1,800회 |
-| `icon_key` 비교 후 갱신 | **`icon` 6회 · `title` 7회** |
+| 비교 후 갱신 | **`icon` 6회 · `title` 60회** |
+
+**툴팁이 그림보다 열 배 자주 바뀌는 것은 정상이다.** 툴팁에는 `format_countdown`과 `format_age`가 들어 있고 둘 다 분 단위라, 서로 다른 분 경계에서 각각 한 번씩 — 30분에 60번 — 문자열이 달라진다. 여전히 1,800 → 60이므로 비교는 제값을 한다. 툴팁까지 초 단위로 만들면 이 60이 1,800으로 돌아간다.
 
 `icon_key()`를 모듈 함수로 빼는 이유는 이 판정이 `Tray`를 만들지 않고 테스트할 수 있어야 하기 때문이다. `pystray.Icon` 생성에는 트레이가 있는 세션이 필요하다.
 
@@ -2988,8 +3127,9 @@ class Tray:
                 state, warn=self._config.warn_pct, danger=self._config.danger_pct
             )
 
-        # 툴팁은 카운트다운 때문에 그림보다 자주 바뀌지만, 분 단위라
-        # 실제로 달라지는 것은 분당 한 번이다.
+        # 툴팁은 카운트다운과 갱신 시각 때문에 그림보다 자주 바뀐다. 둘 다
+        # 분 단위이고 분 경계가 서로 어긋나 있어 분당 두 번꼴이다 —
+        # 30분에 60회. 1,800회보다는 훨씬 적으므로 비교는 제값을 한다.
         title = _tooltip(state)
         if title != self._title:
             self._title = title
@@ -3268,4 +3408,8 @@ Get-Item "$env:USERPROFILE\.claude\.credentials.json" | Select-Object LastWriteT
 - [ ] **엔드포인트 호출 한도 실측** — 5분 주기는 안전하다고 판단해 고른 값이지 측정값이 아니다. 프로그램을 몇 시간 켜두고 429가 한 번도 안 나오는지 확인한다. 나오면 `poll_seconds`를 올리고 `MIN_POLL_SECONDS`도 함께 올린다.
 - [ ] **`client_id` 안정성** — 토큰 갱신을 하지 않으므로 **지금은 무관하다.** 위 관찰 결과 갱신 로직을 넣게 되면 그때 다시 본다.
 - [ ] **스키마 변경 감지** — `SCHEMA_ERROR` 상태가 뜨면 `/api/oauth/usage` 응답을 직접 확인하고 `usage_client.py`의 파싱을 고친다. 판정 기준은 `five_hour.utilization`이 숫자로 읽히느냐 하나뿐이므로, 이 상태가 떴다는 것은 정말로 보여줄 숫자가 없다는 뜻이다.
-- [ ] **고배율 환경 실검증** — `winmetrics`로 배율을 흡수하도록 짰고 이중 확대는 `enable_dpi_awareness()`로 막아뒀지만, **실제로 150% PC에서 돌려본 것은 아니다.** 배율을 바꿔 한 번 확인한다. 창이 100%일 때보다 눈에 띄게 크면(150%에서 2.25배) `enable_dpi_awareness()`가 안 먹은 것이고, 반대로 작으면 `dpi_scale()` 곱셈이 빠진 곳이 있는 것이다.
+- [ ] **고배율 환경 실검증** — `winmetrics`로 배율을 흡수하도록 짰고 이중 확대는 `enable_dpi_awareness()`(창)와 `fonts_for()`(글꼴)로 막아뒀지만, **실제로 150% PC에서 돌려본 것은 아니다.** 100%에서 `tk scaling`을 144 DPI 값으로 강제해 에뮬레이트한 것까지가 확인된 범위다. 배율을 바꿔 한 번 확인하고, 증상별로 원인이 다르다.
+
+  - **창과 글자가 함께 지나치게 크다**(150%에서 2.25배) → `enable_dpi_awareness()`가 안 먹었다
+  - **창은 제 크기인데 글자만 넘쳐 잘린다**(약 1.6배) → `fonts_for()`가 포인트(양수)로 되돌아갔다
+  - **창과 글자가 함께 작다** → `dpi_scale()` 곱셈이 빠진 곳이 있다
