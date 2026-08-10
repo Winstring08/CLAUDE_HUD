@@ -86,6 +86,57 @@ def test_full_usage_draws_no_digits():
     assert r > 200 and g < 180
 
 
+def _ink_rows(img):
+    """글자가 차지하는 세로 범위.
+
+    밝은 픽셀만 세면 안 된다. 숫자는 수위선에서 색이 반전되어 채움 위에서는
+    **어두운** 글자로 그려지므로, 42%처럼 수위가 글자 한가운데를 지나면
+    아래 절반이 통째로 빠진다. 배경(합 135)과 채움(519~558)은 중간 밝기이고
+    글자만 양 극단(밝음 710·어두움 53)이므로 그 둘을 다 센다.
+
+    좌우 3px은 라운드 모서리의 중간톤을 피하려고 뺀다.
+    """
+    rows = [
+        y
+        for y in range(img.height)
+        for x in range(3, img.width - 3)
+        if img.getpixel((x, y))[3] > 200
+        and (sum(img.getpixel((x, y))[:3]) > 600 or sum(img.getpixel((x, y))[:3]) < 120)
+    ]
+    return (min(rows), max(rows)) if rows else None
+
+
+def test_digits_are_big_enough_to_read():
+    """트레이 아이콘은 사용률을 한눈에 보라고 있는 물건이다.
+
+    폭을 맞추겠다고 글자를 8px까지 줄이면 16px 트레이에서 숫자를 읽을 수
+    없고, 그러면 아이콘이 존재할 이유가 사라진다. 글꼴을 바꿀 때 이 자리가
+    조용히 깨지는 것을 막는 테스트다 — 실제로 한 번 깨뜨렸다.
+    """
+    for pct in (7.0, 42.0, 88.0):
+        span = _ink_rows(render_icon(state(Status.OK, pct), size=ICON))
+        assert span is not None, f"{pct}%에서 숫자가 안 보인다"
+        height = span[1] - span[0] + 1
+        # 기본 글꼴에서 11px 숫자의 잉크 높이는 8px, 즉 아이콘의 50%다.
+        assert height >= ICON * 0.4, f"{pct}%의 숫자 높이가 {height}px — 너무 작다"
+
+
+def test_font_never_shrinks_below_the_readable_floor():
+    """폭을 맞추려다 크기를 잃는 일을 막는 바닥선.
+
+    글꼴을 바꾸면 같은 크기라도 폭이 달라진다. Pretendard Bold는 16px 아이콘의
+    "42"를 15px 폭으로 그려서(Segoe UI Bold는 12px), 폭만 보고 줄이면 8px까지
+    내려간다. 넘치는 것보다 못 읽는 것이 나쁘다.
+    """
+    from PIL import Image, ImageDraw
+
+    from claude_usage_overlay.icon_render import MIN_TEXT_PX, _fitted_font
+
+    draw = ImageDraw.Draw(Image.new("RGBA", (ICON, ICON)))
+    for text in ("7", "42", "88", "…", "?"):
+        assert _fitted_font(draw, ICON, text).size >= MIN_TEXT_PX
+
+
 def test_digits_stay_inside_the_icon():
     """글꼴을 바꾸면 같은 크기라도 폭이 달라진다.
 

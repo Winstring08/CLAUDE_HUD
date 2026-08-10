@@ -11,11 +11,16 @@ from . import theme, winmetrics
 from .models import HudState, Status
 
 # 앞에서부터 있는 것을 쓴다. 시스템 Fonts와 사용자 Fonts 양쪽을 본다.
+#
+# **오버레이와 달리 여기는 Segoe UI가 먼저다.** 아이콘에 들어가는 글자는
+# 숫자와 ✕·!·?·… 뿐이라 한글이 없고, 그러면 Pretendard를 쓸 이유가 사라진다.
+# 오히려 손해다 — 16px에서 "42"의 폭이 Segoe UI Bold는 11px 크기에 12px인데
+# Pretendard Bold는 15px이라(실측), 같은 자리에 넣으려면 8px까지 줄여야 하고
+# 그러면 트레이에서 숫자를 읽을 수 없다. 작은 크기 가독성은 윈도우 UI용으로
+# 힌팅된 Segoe UI 쪽이 낫다. Pretendard는 Segoe UI가 없는 환경의 대비책으로만 남긴다.
 FONT_FILES = [
-    "Pretendard-Bold.ttf",
-    "Pretendard-SemiBold.ttf",
-    "PretendardVariable.ttf",
     "segoeuib.ttf",
+    "Pretendard-Bold.ttf",
     "malgunbd.ttf",
     "arialbd.ttf",
 ]
@@ -47,20 +52,24 @@ def _font(size: int):
 
 
 TEXT_RATIO = 0.72   # 아이콘 높이 대비 글자 크기의 출발점
-SIDE_MARGIN = 2     # 좌우로 이만큼은 남긴다
+SIDE_MARGIN = 1     # 좌우로 이만큼은 남긴다
+MIN_TEXT_PX = 9     # 이보다 작으면 트레이에서 읽을 수 없다
 
 
 def _fitted_font(draw, size: int, text: str):
     """아이콘 폭에 실제로 들어가는 가장 큰 글꼴.
 
-    글꼴마다 같은 크기라도 폭이 다르다 — 16px 아이콘에서 두 자리 숫자는
-    Segoe UI로는 여유가 있지만 Pretendard로는 좌우가 꽉 찬다. 비율을
-    하나로 못박으면 글꼴을 바꿀 때마다 이 자리가 조용히 깨지므로,
-    넘치지 않을 때까지 1px씩 줄여서 고른다.
+    글꼴마다 같은 크기라도 폭이 다르다. 비율을 하나로 못박으면 글꼴을 바꿀 때
+    이 자리가 조용히 깨지므로, 넘치지 않을 때까지 1px씩 줄여서 고른다.
+
+    **단 MIN_TEXT_PX 아래로는 줄이지 않는다.** 넘치는 것보다 읽을 수 없는 것이
+    더 나쁘다 — 트레이 아이콘은 사용률을 한눈에 보라고 있는 물건이고, 8px로
+    그린 숫자는 그 목적을 통째로 잃는다. 여기 걸리면 글자가 가장자리에 닿을
+    수는 있어도 크기는 지킨다.
     """
-    px = max(6, int(size * TEXT_RATIO))
+    px = max(MIN_TEXT_PX, int(size * TEXT_RATIO))
     font = _font(px)
-    while px > 6:
+    while px > MIN_TEXT_PX:
         box = draw.textbbox((0, 0), text, font=font)
         if box[2] - box[0] <= size - SIDE_MARGIN * 2:
             break
