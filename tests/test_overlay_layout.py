@@ -1,0 +1,84 @@
+"""오버레이에 그려질 문구가 창 안에 실제로 들어가는지 잰다.
+
+창을 띄우지 않는다. 글꼴 폭만 재므로 UI 테스트가 아니다.
+이게 없으면 문구를 한 글자 늘렸을 때 조용히 잘리고, 하필 잘리는 것이
+사용자가 조치해야 하는 RELOGIN·RATE_LIMITED 상태다.
+
+**RELOGIN 문구는 리터럴로 베끼지 않고 credentials에서 가져온다.** 손으로
+베끼면 문구가 바뀌었을 때 테스트만 옛날 것을 재고, 정작 화면에 가는
+문자열은 아무도 안 잰다.
+"""
+
+import tkinter as tk
+import tkinter.font as tkfont
+
+import pytest
+
+from claude_usage_overlay import overlay as ov
+from claude_usage_overlay.credentials import RELOGIN_MSG, STALE_TOKEN_MSG
+
+# RELOGIN detail은 "제목 — 할 일" 한 문자열이고 오버레이가 두 줄로 쪼갠다.
+RELOGIN_HEADS = [m.partition(" — ")[0] for m in (RELOGIN_MSG, STALE_TOKEN_MSG)]
+RELOGIN_TAILS = [m.partition(" — ")[2] for m in (RELOGIN_MSG, STALE_TOKEN_MSG)]
+
+# 스펙 7장의 다섯 상태에 실제로 들어가는 문구 전부.
+# 문구를 늘리려면 여기도 늘리고, 테스트가 통과하는지 본다.
+#
+# snapshot이 없을 때는 detail이 **첫 줄**에 그려진다. 그래서 폴러가 만드는
+# detail 문구가 line2가 아니라 line1 목록에 들어간다 — 글꼴이 1px 더 크다.
+LINE1 = [
+    "10시간 14분 후 리셋",   # format_countdown 최장
+    "곧 리셋",
+    "—",
+    "불러오는 중",              # 폴러 초기 상태
+    "아직 데이터가 없습니다",    # 한 번도 성공하지 못한 채 실패
+    "인증 재시도 중",           # 401 유예 구간
+    "데이터 형식이 바뀜",
+    "호출 한도 — 잠시 후 재시도",   # 첫 조회부터 429면 이것도 첫 줄에 온다
+] + RELOGIN_HEADS
+LINE2 = RELOGIN_TAILS + [
+    "호출 한도 — 잠시 후 재시도",
+    "120분째 갱신 실패",
+    "23시간 전 갱신",
+    "방금 갱신됨",
+]
+
+
+@pytest.fixture(scope="module")
+def root():
+    r = tk.Tk()
+    r.withdraw()
+    yield r
+    r.destroy()
+
+
+def _fits(root, px, text):
+    font = tkfont.Font(root=root, family="Segoe UI", size=-px)
+    used = ov.BASE_TEXT_X + font.measure(text) + ov.BASE_RIGHT_MARGIN
+    return used <= ov.BASE_WIDTH, used
+
+
+@pytest.mark.parametrize("text", LINE1)
+def test_line1_fits(root, text):
+    ok, used = _fits(root, ov.BASE_FONT_LINE1_PX, text)
+    assert ok, f"{used}px 필요 / 창 폭 {ov.BASE_WIDTH}px — {text!r}"
+
+
+@pytest.mark.parametrize("text", LINE2)
+def test_line2_fits(root, text):
+    ok, used = _fits(root, ov.BASE_FONT_LINE2_PX, text)
+    assert ok, f"{used}px 필요 / 창 폭 {ov.BASE_WIDTH}px — {text!r}"
+
+
+def test_font_sizes_are_pixels_not_points():
+    """Tk에서 양수 크기는 포인트다. 포인트는 tk scaling이 이미 DPI로
+    확대하므로, 거기에 dpi_scale()을 또 곱하면 고배율에서 이중 확대된다."""
+    assert all(spec[1] < 0 for spec in ov.fonts_for(1.0).values())
+    assert all(spec[1] < 0 for spec in ov.fonts_for(1.5).values())
+
+
+def test_font_sizes_scale_with_dpi():
+    """캔버스 치수와 같은 배율로 커져야 글자가 창을 넘지 않는다."""
+    base, high = ov.fonts_for(1.0), ov.fonts_for(1.5)
+    for key in base:
+        assert high[key][1] == -round(-base[key][1] * 1.5)
