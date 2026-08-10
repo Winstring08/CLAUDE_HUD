@@ -12,6 +12,7 @@ from .config import Config, config_path, save_config
 from .formatting import format_age, format_countdown
 from .icon_render import render_icon
 from .models import HudState, Status
+from .winmetrics import system_icon_size
 
 
 STALE_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
@@ -29,6 +30,47 @@ def _clip(text: str) -> str:
     if len(text) <= TOOLTIP_LIMIT:
         return text
     return text[: TOOLTIP_LIMIT - 1] + "…"
+
+
+def _load_icon_at(image, size: int) -> int:
+    """이미지를 정확히 size 픽셀짜리 HICON으로 만든다.
+
+    pystray가 기본으로 하는 일은 이렇다.
+
+        LoadImage(..., IMAGE_ICON, 0, 0, LR_DEFAULTSIZE)
+
+    LR_DEFAULTSIZE는 "큰 아이콘 크기(SM_CXICON, 100%에서 32px)로 로드"라는
+    뜻이다. 트레이가 쓰는 것은 작은 아이콘 크기(16px)인데도 그렇다. 그래서
+    16px 그림이 32px로 늘어났다가 화면에서 다시 16px로 줄어들고, 그 왕복에서
+    숫자 획이 뭉개진다 — 흐리게 보이던 원인이다.
+
+    크기를 명시하면 확대도 축소도 일어나지 않고 우리가 그린 픽셀이 그대로 간다.
+    """
+    from pystray._util import serialized_image, win32
+
+    with serialized_image(image, "ICO") as path:
+        handle = win32.LoadImage(
+            None, path, win32.IMAGE_ICON, size, size, win32.LR_LOADFROMFILE
+        )
+    if not handle:
+        raise OSError("LoadImage가 아이콘을 만들지 못했습니다")
+    return handle
+
+
+class _SharpIcon(pystray.Icon):
+    """확대를 거치지 않고 아이콘을 싣는 트레이 아이콘.
+
+    pystray의 내부 메서드를 갈아끼우므로 판올림에서 구조가 바뀔 수 있다.
+    그때는 원래 방식으로 돌아간다 — 아이콘이 흐려질 뿐 프로그램은 돈다.
+    """
+
+    def _assert_icon_handle(self):
+        if self._icon_handle:
+            return
+        try:
+            self._icon_handle = _load_icon_at(self.icon, system_icon_size())
+        except Exception:
+            super()._assert_icon_handle()
 
 
 def icon_key(state: HudState) -> tuple:
@@ -69,11 +111,24 @@ class Tray:
         state = poller.state()
         self._icon_key = icon_key(state)
         self._title = _tooltip(state)
-        self._icon = pystray.Icon(
+        self._icon = _SharpIcon(
             "claude-usage-overlay",
-            icon=render_icon(state, warn=config.warn_pct, danger=config.danger_pct),
+            icon=self._render(state),
             title=self._title,
             menu=self._build_menu(),
+        )
+
+    def _render(self, state: HudState):
+        """트레이가 실제로 그리는 크기 그대로 만든다.
+
+        _SharpIcon이 이 크기로 로드하므로 확대도 축소도 없다. 16px에 맞춰
+        고른 글자 크기와 획이 화면까지 그대로 간다.
+        """
+        return render_icon(
+            state,
+            size=system_icon_size(),
+            warn=self._config.warn_pct,
+            danger=self._config.danger_pct,
         )
 
     def _build_menu(self) -> pystray.Menu:
@@ -159,9 +214,7 @@ class Tray:
         key = icon_key(state)
         if key != self._icon_key:
             self._icon_key = key
-            self._icon.icon = render_icon(
-                state, warn=self._config.warn_pct, danger=self._config.danger_pct
-            )
+            self._icon.icon = self._render(state)
 
         # 툴팁은 카운트다운과 갱신 시각 때문에 그림보다 자주 바뀐다. 둘 다
         # 분 단위이고 분 경계가 서로 어긋나 있어 분당 두 번꼴이다 —

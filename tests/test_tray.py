@@ -1,7 +1,10 @@
+import ctypes
+from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 
+from claude_usage_overlay.icon_render import render_icon
 from claude_usage_overlay.models import HudState, Status, UsageSnapshot
-from claude_usage_overlay.tray import TOOLTIP_LIMIT, _tooltip, icon_key
+from claude_usage_overlay.tray import TOOLTIP_LIMIT, _load_icon_at, _tooltip, icon_key
 
 NOW = datetime(2026, 8, 10, 3, 25, tzinfo=timezone.utc)
 
@@ -42,6 +45,66 @@ def test_tooltip_without_a_snapshot_shows_the_detail():
     """RELOGIN·SCHEMA_ERROR·첫 조회 전이 모두 여기로 온다."""
     text = _tooltip(HudState(Status.RELOGIN, None, "재로그인 필요 — claude auth login"))
     assert "claude auth login" in text
+
+
+class _ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", wintypes.BOOL),
+        ("xHotspot", wintypes.DWORD),
+        ("yHotspot", wintypes.DWORD),
+        ("hbmMask", ctypes.c_void_p),
+        ("hbmColor", ctypes.c_void_p),
+    ]
+
+
+class _BITMAP(ctypes.Structure):
+    _fields_ = [
+        ("bmType", ctypes.c_long),
+        ("bmWidth", ctypes.c_long),
+        ("bmHeight", ctypes.c_long),
+        ("bmWidthBytes", ctypes.c_long),
+        ("bmPlanes", wintypes.WORD),
+        ("bmBitsPixel", wintypes.WORD),
+        ("bmBits", ctypes.c_void_p),
+    ]
+
+
+def _hicon_size(handle: int) -> tuple[int, int]:
+    user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    user32.GetIconInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ICONINFO)]
+    gdi32.GetObjectW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+
+    info = _ICONINFO()
+    assert user32.GetIconInfo(ctypes.c_void_p(handle), ctypes.byref(info))
+    bitmap = _BITMAP()
+    gdi32.GetObjectW(
+        ctypes.c_void_p(info.hbmColor), ctypes.sizeof(bitmap), ctypes.byref(bitmap)
+    )
+    return (bitmap.bmWidth, bitmap.bmHeight)
+
+
+def test_icon_is_loaded_without_being_scaled():
+    """pystray 기본 경로는 LR_DEFAULTSIZE로 읽어 **32px** HICON을 만든다(실측).
+
+    트레이가 그리는 크기는 16px이므로, 16px 그림이 32px로 늘어난 뒤 다시
+    16px로 줄어든다. 그 왕복에서 숫자 획이 뭉개져 흐리게 보였다.
+    크기를 명시해 읽으면 확대도 축소도 없다.
+    """
+    image = render_icon(state(), size=16)
+    handle = _load_icon_at(image, 16)
+    try:
+        assert _hicon_size(handle) == (16, 16)
+    finally:
+        ctypes.windll.user32.DestroyIcon(ctypes.c_void_p(handle))
+
+
+def test_icon_follows_a_larger_system_metric():
+    """배율 150% PC의 트레이 아이콘은 24px이다. 그 크기로도 확대 없이 실려야 한다."""
+    handle = _load_icon_at(render_icon(state(), size=24), 24)
+    try:
+        assert _hicon_size(handle) == (24, 24)
+    finally:
+        ctypes.windll.user32.DestroyIcon(ctypes.c_void_p(handle))
 
 
 def test_tooltip_never_exceeds_the_win32_buffer():
