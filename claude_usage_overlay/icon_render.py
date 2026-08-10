@@ -82,13 +82,26 @@ def _fitted_font(draw, size: int, text: str):
     return font
 
 
+# 글자를 안티앨리어싱 없이 그린다.
+#
+# 16px 아이콘에서는 회색 중간톤이 획을 또렷하게 만들기보다 뿌옇게 만든다.
+# 획 굵기가 1~2px뿐이라 중간톤 한 겹이 획의 절반을 차지하기 때문이다.
+# 계단이 지더라도 검고 흰 픽셀만 쓰는 쪽이 작은 크기에서 읽기 쉽다 —
+# 윈도우 기본 트레이 아이콘들이 쓰는 방식이기도 하다.
+ANTIALIAS_TEXT = False
+
+
 def _centered_text(size: int, text: str, color: str) -> Image.Image:
     layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
+    if not ANTIALIAS_TEXT:
+        draw.fontmode = "1"
     font = _fitted_font(draw, size, text)
     box = draw.textbbox((0, 0), text, font=font)
-    x = (size - (box[2] - box[0])) / 2 - box[0]
-    y = (size - (box[3] - box[1])) / 2 - box[1]
+    # 좌표를 정수로 맞춘다. 반 픽셀 어긋난 자리에 그리면 안티앨리어싱을 꺼도
+    # 획이 인접 픽셀로 번지거나 한쪽으로 쏠린다.
+    x = round((size - (box[2] - box[0])) / 2 - box[0])
+    y = round((size - (box[3] - box[1])) / 2 - box[1])
     draw.text((x, y), text, font=font, fill=_hex(color))
     return layer
 
