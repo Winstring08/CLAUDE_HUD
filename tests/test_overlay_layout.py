@@ -94,6 +94,24 @@ def test_pretendard_wins_when_it_is_installed(root):
     assert ov.pick_font_family(root).lower().startswith("pretendard")
 
 
+def test_ring_number_fits_inside_the_ring(root):
+    """링 안에는 숫자만 넣는다(% 없음). 그만큼 키웠으니 넘치지 않는지 잰다.
+
+    100%는 세 자리라 가장 빡빡하다. 넘치면 create_text가 말없이 잘라낸다.
+    """
+    inner = (ov.BASE_RING_BOX[2] - ov.BASE_RING_BOX[0]) - 2 * ov.BASE_RING_WIDTH
+    family = ov.pick_font_family(root)
+
+    for text in ("8", "62", "100"):
+        px = ov.BASE_FONT_PCT_PX
+        font = tkfont.Font(root=root, family=family, size=-px, weight="bold")
+        while px > 8 and font.measure(text) > inner - ov.PCT_INNER_MARGIN * 2:
+            px -= 1
+            font = tkfont.Font(root=root, family=family, size=-px, weight="bold")
+        assert font.measure(text) <= inner - ov.PCT_INNER_MARGIN * 2, text
+        assert px >= 12, f"{text!r}가 {px}px까지 줄었다 — 링이 너무 작다"
+
+
 def test_font_sizes_are_pixels_not_points():
     """Tk에서 양수 크기는 포인트다. 포인트는 tk scaling이 이미 DPI로
     확대하므로, 거기에 dpi_scale()을 또 곱하면 고배율에서 이중 확대된다."""

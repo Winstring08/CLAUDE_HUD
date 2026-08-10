@@ -40,7 +40,12 @@ MARGIN = 24
 ALPHA = 0.82
 
 # 글꼴 크기는 픽셀이다. 음수로 넘긴다 (Tk 규약: 음수 = 픽셀, 양수 = 포인트).
-BASE_FONT_PCT_PX = 13
+#
+# 링 안에는 숫자만 넣고 % 기호를 뺐다. 기호가 빠진 만큼 폭이 남으므로 글자를
+# 키운다. 다만 링 안쪽 지름이 32px이라 세 자리(100)는 17px이 한계다 —
+# 그래서 이 값은 **출발점**이고, 실제 크기는 _pct_font()가 자릿수를 보고 줄인다.
+BASE_FONT_PCT_PX = 20
+PCT_INNER_MARGIN = 2   # 링 선에 글자가 닿지 않게 남기는 여유
 BASE_FONT_LINE1_PX = 12
 BASE_FONT_LINE2_PX = 11
 
@@ -88,7 +93,6 @@ def fonts_for(scale: float, family: str = FALLBACK_FAMILY) -> dict[str, tuple]:
     캔버스 치수와 정확히 같은 비율로 커진다.
     """
     return {
-        "pct": (family, -round(BASE_FONT_PCT_PX * scale), "bold"),
         "line1": (family, -round(BASE_FONT_LINE1_PX * scale)),
         "line2": (family, -round(BASE_FONT_LINE2_PX * scale)),
     }
@@ -109,7 +113,7 @@ class Overlay:
         self._line2_y = round(BASE_LINE2_Y * s)
         self._family = pick_font_family(root)
         fonts = fonts_for(s, self._family)
-        self._font_pct = fonts["pct"]
+        # 링 안 숫자는 여기서 정하지 않는다. 자릿수를 봐야 하므로 _pct_font()가 맡는다.
         self._font_line1 = fonts["line1"]
         self._font_line2 = fonts["line2"]
 
@@ -137,6 +141,10 @@ class Overlay:
         # 링 그림 캐시. PhotoImage는 참조가 끊기면 화면에서 사라진다.
         self._ring_key: tuple | None = None
         self._ring_photo: ImageTk.PhotoImage | None = None
+
+        # 링 안 숫자 글꼴 캐시. 자릿수마다 크기가 다르므로 자릿수를 키로 쓴다.
+        self._ring_inner = (self._ring[2] - self._ring[0]) - 2 * self._ring_width
+        self._pct_fonts: dict[int, tkfont.Font] = {}
 
         self._state = HudState(Status.STALE, None, "불러오는 중")
         self._visible = config.overlay_visible
@@ -252,12 +260,14 @@ class Overlay:
         dim = state.status in DIM_STATUSES
 
         self._draw_ring(pct, theme.RING_DIM if dim else color)
+        # 링 안에는 숫자만. % 기호는 링 자체가 이미 비율을 말하고 있어 군더더기다.
+        number = str(int(round(pct)))
         c.create_text(
             (self._ring[0] + self._ring[2]) / 2,
             (self._ring[1] + self._ring[3]) / 2,
-            text=f"{int(round(pct))}%",
+            text=number,
             fill=theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT,
-            font=self._font_pct,
+            font=self._pct_font(number),
         )
 
         # resets_at이 None이면 "—"가 온다. 링과 숫자는 그대로 그린다.
@@ -272,6 +282,30 @@ class Overlay:
         self._draw_text(
             line1, theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT, line2, line2_color
         )
+
+    def _pct_font(self, text: str) -> tkfont.Font:
+        """링 안에 들어가는 가장 큰 글꼴.
+
+        평소에는 두 자리라 큼직하게 들어가고, 100%가 되는 순간에만 한 단계
+        작아진다. 자릿수로 캐시하는 이유는 숫자 글리프 폭이 서로 같아서
+        `62`와 `87`이 같은 크기를 쓰기 때문이다.
+        """
+        digits = len(text)
+        cached = self._pct_fonts.get(digits)
+        if cached is not None:
+            return cached
+
+        limit = self._ring_inner - round(PCT_INNER_MARGIN * self._scale) * 2
+        px = round(BASE_FONT_PCT_PX * self._scale)
+        font = tkfont.Font(root=self._win, family=self._family, size=-px, weight="bold")
+        while px > 8 and font.measure(text) > limit:
+            px -= 1
+            font = tkfont.Font(
+                root=self._win, family=self._family, size=-px, weight="bold"
+            )
+
+        self._pct_fonts[digits] = font
+        return font
 
     def _draw_ring(self, pct: float, color: str) -> None:
         """링은 캔버스가 아니라 PIL이 그린다.
