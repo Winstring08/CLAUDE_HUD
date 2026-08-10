@@ -16,7 +16,12 @@ from PIL import ImageTk
 from . import theme
 from .ring_render import render_ring
 from .config import Config, save_config
-from .formatting import format_age, format_countdown
+from .formatting import (
+    LOADING_TEXT,
+    RATE_LIMITED_TEXT,
+    format_age,
+    format_countdown,
+)
 from .models import HudState, Status
 from .winmetrics import (
     dpi_scale,
@@ -25,12 +30,17 @@ from .winmetrics import (
     virtual_screen_rect,
 )
 
-# 폭 240은 눈대중이 아니라 역산이다. 가장 긴 문구인 RELOGIN 뒷줄
-# "Claude Code를 한 번 실행하세요"가 11px Segoe UI에서 163px이고,
-# BASE_TEXT_X(66) + 163 + BASE_RIGHT_MARGIN(10) = 239다.
+# 폭 180은 눈대중이 아니라 역산이다. 화면에 나갈 수 있는 모든 문구를 재서
+# 가장 긴 것이 카운트다운 "10시간 14분 후 리셋"(169px)이고, 거기에 여유를 뒀다.
+#
+# 한때 240px이었다. 드물게 뜨는 안내 문구가 길었기 때문이다 —
+# "Claude Code를 한 번 실행하세요"가 228px, "호출 한도 — 잠시 후 재시도"가
+# 202px을 요구했다. 그 둘 때문에 **평소 화면 오른쪽 71px이 늘 비어 있었다.**
+# 문구를 짧게 다듬어(formatting.py) 창을 내용에 맞췄다.
+#
 # create_text에는 width 옵션이 없어 넘치면 경고 없이 잘린다.
 # tests/test_overlay_layout.py가 이 여유를 지킨다.
-BASE_WIDTH, BASE_HEIGHT = 240, 62
+BASE_WIDTH, BASE_HEIGHT = 180, 62
 BASE_RING_BOX = (12, 12, 54, 54)   # x0, y0, x1, y1
 BASE_RING_WIDTH = 5
 BASE_TEXT_X = 66
@@ -148,7 +158,7 @@ class Overlay:
         self._ring_inner = (self._ring[2] - self._ring[0]) - 2 * self._ring_width
         self._pct_fonts: dict[int, tkfont.Font] = {}
 
-        self._state = HudState(Status.STALE, None, "불러오는 중")
+        self._state = HudState(Status.STALE, None, LOADING_TEXT)
         self._visible = config.overlay_visible
         if not self._visible:
             self._win.withdraw()
@@ -253,7 +263,7 @@ class Overlay:
             # 만든 쪽이 정하므로 오버레이는 기호를 고를 필요가 없다 —
             # 트레이 아이콘만 "…"와 "?"를 구분한다.
             self._draw_ring(0, theme.GREY)
-            self._draw_text(state.detail or "불러오는 중", theme.TEXT_DIM, "", theme.TEXT_DIM)
+            self._draw_text(state.detail or LOADING_TEXT, theme.TEXT_DIM, "", theme.TEXT_DIM)
             return
 
         snap = state.snapshot
@@ -277,7 +287,7 @@ class Overlay:
         if state.status is Status.STALE:
             line2, line2_color = state.detail, theme.YELLOW
         elif state.status is Status.RATE_LIMITED:
-            line2, line2_color = "호출 한도 — 잠시 후 재시도", theme.YELLOW
+            line2, line2_color = RATE_LIMITED_TEXT, theme.YELLOW
         else:
             line2, line2_color = format_age(snap.fetched_at, now), theme.TEXT_DIM
 

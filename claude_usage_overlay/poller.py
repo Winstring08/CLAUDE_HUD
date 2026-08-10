@@ -9,7 +9,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from .config import Config
-from .formatting import format_stale_detail
+from .formatting import (
+    AUTH_RETRY_TEXT,
+    LOADING_TEXT,
+    NO_DATA_TEXT,
+    RATE_LIMITED_TEXT,
+    SCHEMA_ERROR_TEXT,
+    format_stale_detail,
+)
 from .models import (
     HudState,
     RateLimited,
@@ -44,7 +51,7 @@ class Poller:
         self._now = now
 
         self._lock = threading.Lock()
-        self._state = HudState(Status.STALE, None, "불러오는 중")
+        self._state = HudState(Status.STALE, None, LOADING_TEXT)
         self._last_snapshot: UsageSnapshot | None = None
         self._failures = 0
         self._unauthorized = 0
@@ -69,7 +76,7 @@ class Poller:
             delay = err.retry_after + RATE_LIMIT_PADDING
             # request_now()가 이 구간을 깨우지 못하게 막는다 (스펙 8장).
             self._blocked_until = self._now() + timedelta(seconds=delay)
-            self._set(Status.RATE_LIMITED, self._last_snapshot, "호출 한도 — 잠시 후 재시도")
+            self._set(Status.RATE_LIMITED, self._last_snapshot, RATE_LIMITED_TEXT)
             return delay
         except Unauthorized:
             return self._handle_unauthorized()
@@ -81,7 +88,7 @@ class Poller:
             # 뿐이다. 30분까지 늘리면 README의 "한 번 실행하면 낫는다"가 거짓이 된다.
             return self._config.poll_seconds
         except SchemaChanged:
-            self._set(Status.SCHEMA_ERROR, None, "데이터 형식이 바뀜")
+            self._set(Status.SCHEMA_ERROR, None, SCHEMA_ERROR_TEXT)
             return self._backoff()
         except Exception:  # 네트워크 오류 등
             return self._handle_transient()
@@ -106,7 +113,7 @@ class Poller:
         429 벌칙 중에는 아무 일도 하지 않는다. 스펙 8장은 retry-after까지
         호출하지 않기로 정했고, 트레이 메뉴가 유일한 조작 수단이라 사용자는
         답답할 때 이 버튼을 누른다. 여기서 깨우면 429가 또 나고 벌칙만 길어진다.
-        화면에는 이미 "호출 한도 — 잠시 후 재시도"가 떠 있다.
+        화면에는 이미 "호출 한도 초과"가 떠 있다.
         """
         if self._blocked_until is not None and self._now() < self._blocked_until:
             return
@@ -143,7 +150,7 @@ class Poller:
             # (사용자가 조치하면 다음 틱에 낫는다) 지연도 같아야 한다.
             return self._config.poll_seconds
 
-        self._mark_stale("인증 재시도 중")
+        self._mark_stale(AUTH_RETRY_TEXT)
         # 백오프를 태우지 않는다. 이 401은 경합이고 회복은 다음 틱에 파일을 다시
         # 읽으면 끝난다. 지연을 늘리면 5분이면 나을 것이 10분, 20분이 되고 3회를
         # 채우는 데 35분이 걸린다. _failures도 건드리지 않는다 — 인증 경합과
@@ -156,7 +163,7 @@ class Poller:
 
     def _mark_stale(self, detail: str | None = None) -> None:
         if self._last_snapshot is None:
-            self._set(Status.STALE, None, detail or "아직 데이터가 없습니다")
+            self._set(Status.STALE, None, detail or NO_DATA_TEXT)
             return
         detail = detail or format_stale_detail(self._last_snapshot.fetched_at, self._now())
         self._set(Status.STALE, self._last_snapshot, detail)

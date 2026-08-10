@@ -164,7 +164,7 @@ Content-Type: application/json
 내부 동작은 **파일 읽기가 전부다.** 쓰지 않는다.
 
 - 호출할 때마다 파일을 다시 읽는다. 캐시하지 않는다 — 다른 프로세스가 언제든 갱신하기 때문이다
-- accessToken이 만료됐으면 `ReloginRequired("Claude Code를 한 번 실행하세요")`
+- accessToken이 만료됐으면 `ReloginRequired("Claude Code 실행")`
 - refreshToken까지 만료됐거나 파일이 없거나 깨졌으면 `ReloginRequired("claude auth login")`
 
 두 경우 모두 같은 예외를 쓰고 문구로 구분한다. UI가 두 상태를 다르게 다룰 이유가 없고, 사용자가 할 일만 다르다.
@@ -205,7 +205,7 @@ Content-Type: application/json
 Status = OK | STALE | RATE_LIMITED | RELOGIN | SCHEMA_ERROR
 ```
 
-`RELOGIN`의 문구는 `credentials`가 정하고 poller는 그대로 넘긴다. "Claude Code를 한 번 실행하세요"와 "claude auth login"을 가르는 것은 자격증명 파일의 상태이고, 그건 poller가 아는 일이 아니다.
+`RELOGIN`의 문구는 `credentials`가 정하고 poller는 그대로 넘긴다. "Claude Code 실행"과 "claude auth login"을 가르는 것은 자격증명 파일의 상태이고, 그건 poller가 아는 일이 아니다.
 
 401은 3회 연속일 때만 `RELOGIN`으로 넘긴다. 이유는 §8에 있다.
 
@@ -269,7 +269,7 @@ tkinter **창 조작**은 메인 스레드에서만 한다. 트레이 메뉴 콜
 | `OK` | 100% | 빨강 꽉 참 | 빨강 꽉 참 + **✕** |
 | `STALE` | 없음 (첫 조회 전) | 링 비움 + "불러오는 중" | 회색 + **…** |
 | `STALE` | 마지막 값 | 링 흐림 + "N분째 갱신 실패" | 아이콘 흐림 |
-| `RATE_LIMITED` | 마지막 값 | 링 흐림 + "호출 한도 — 잠시 후 재시도" | 아이콘 흐림 |
+| `RATE_LIMITED` | 마지막 값 | 링 흐림 + "호출 한도 초과" | 아이콘 흐림 |
 | `SCHEMA_ERROR` | 없음 | 링 비움 + "데이터 형식이 바뀜" | 회색 + **?** |
 | `RELOGIN` | 없음 | 링 비움 + 안내 문구 | 회색 + **!** |
 
@@ -287,7 +287,7 @@ tkinter **창 조작**은 메인 스레드에서만 한다. 트레이 메뉴 콜
 
 | 원인 | 문구 |
 |---|---|
-| accessToken만 만료 | "토큰 만료 / Claude Code를 한 번 실행하세요" |
+| accessToken만 만료 | "토큰 만료 / Claude Code 실행" |
 | refreshToken 만료 · 파일 없음 · 파일 손상 | "재로그인 필요 / claude auth login" |
 
 **100%는 숫자를 넣지 않는다.** 16px 폭에 세 자리 굵은 숫자는 물리적으로 들어가지 않는다. ✕로 대체한다.
@@ -299,7 +299,7 @@ tkinter **창 조작**은 메인 스레드에서만 한다. 트레이 메뉴 콜
 | 네트워크 실패 | 마지막 값 유지, 흐리게, "N분째 갱신 실패" |
 | 429 | `retry-after` 헤더를 그대로 존중하고 그때까지 호출하지 않음 |
 | 401 | 다음 틱에 파일을 다시 읽어 재시도. **백오프를 태우지 않는다.** 3회 연속이면 `RELOGIN` |
-| accessToken 만료 | `RELOGIN` + "Claude Code를 한 번 실행하세요". 우리가 갱신하지 않는다 |
+| accessToken 만료 | `RELOGIN` + "Claude Code 실행". 우리가 갱신하지 않는다 |
 | refreshToken 만료 · 파일 없음 · 손상 | `RELOGIN` + "claude auth login" |
 | `resets_at`이 없음 | 카운트다운만 `—`. 사용률은 정상 표시 |
 | 스키마 변경 | "데이터 형식이 바뀜" 표시. **숫자를 지어내지 않는다** |
@@ -325,7 +325,7 @@ tkinter **창 조작**은 메인 스레드에서만 한다. 트레이 메뉴 콜
 
 accessToken 수명은 8시간이고 그 갱신은 Claude Code가 자기 필요에 따라 한다. 우리는 편승할 뿐이다. 따라서 **Claude Code를 8시간 넘게 쓰지 않으면 우리 토큰도 만료되고 조회가 멈춘다.**
 
-그때 숫자를 지어내지 않고 "Claude Code를 한 번 실행하세요"를 표시한다. 5시간 창은 Claude를 쓰지 않는 동안 어차피 움직이지 않으므로, 이 구간에서 잃는 정보는 크지 않다.
+그때 숫자를 지어내지 않고 "Claude Code 실행"을 표시한다. 5시간 창은 Claude를 쓰지 않는 동안 어차피 움직이지 않으므로, 이 구간에서 잃는 정보는 크지 않다.
 
 이 대가가 실제로 발생하는지는 아직 모른다. Claude Code가 파일을 저절로 갱신하는지 확인하지 못했다 — 확인 방법은 §12에 적었다.
 

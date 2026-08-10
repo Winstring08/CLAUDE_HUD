@@ -22,8 +22,10 @@ from .models import ReloginRequired
 CREDENTIALS_PATH = Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".claude" / ".credentials.json"
 OAUTH_KEY = "claudeAiOauth"
 
+# 화면에 그대로 나가는 문구다. 짧게 유지한다 — 오버레이 창 폭이 가장 긴
+# 문구에서 역산되므로, 여기가 길면 평소 화면에 빈 공간만 늘어난다.
 RELOGIN_MSG = "재로그인 필요 — claude auth login"
-STALE_TOKEN_MSG = "토큰 만료 — Claude Code를 한 번 실행하세요"
+STALE_TOKEN_MSG = "토큰 만료 — Claude Code 실행"
 
 
 def _now_ms() -> int:

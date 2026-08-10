@@ -62,7 +62,7 @@ Pretendard가 깔려 있지 않으면 트레이 메뉴에 **"Pretendard 글꼴 �
 들고 있는 Claude Code와 데스크톱 앱의 인증이 깨진다.
 
 대가는 하나다 — **Claude Code를 8시간 넘게 쓰지 않으면 토큰이 만료되어 조회가 멈춘다.**
-그때는 "토큰 만료 — Claude Code를 한 번 실행하세요"가 뜬다. 한 번 실행하면 낫는다.
+그때는 "토큰 만료 — Claude Code 실행"이 뜬다. 한 번 실행하면 낫는다.
 
 30일 넘게 이 프로그램과 Claude Code를 모두 쓰지 않으면 refreshToken까지 만료되어
 `claude auth login`을 다시 해야 한다.

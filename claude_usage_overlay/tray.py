@@ -9,7 +9,7 @@ import pystray
 
 from . import autostart, font_install
 from .config import Config, config_path, save_config
-from .formatting import format_age, format_countdown
+from .formatting import LOADING_TEXT, format_age, format_countdown
 from .icon_render import render_icon
 from .models import HudState, Status
 from .winmetrics import system_icon_size
@@ -86,7 +86,7 @@ def icon_key(state: HudState) -> tuple:
 def _tooltip(state: HudState) -> str:
     if state.snapshot is None:
         # RELOGIN·SCHEMA_ERROR 모두 여기로 온다. 문구는 만든 쪽이 정한다.
-        return _clip(f"Claude 사용량\n{state.detail or '불러오는 중'}")
+        return _clip(f"Claude 사용량\n{state.detail or LOADING_TEXT}")
 
     now = datetime.now(timezone.utc)
     snap = state.snapshot

@@ -14,6 +14,7 @@ import tkinter.font as tkfont
 
 import pytest
 
+from claude_usage_overlay import formatting as fmt
 from claude_usage_overlay import overlay as ov
 from claude_usage_overlay.credentials import RELOGIN_MSG, STALE_TOKEN_MSG
 
@@ -26,18 +27,20 @@ RELOGIN_TAILS = [m.partition(" — ")[2] for m in (RELOGIN_MSG, STALE_TOKEN_MSG)
 #
 # snapshot이 없을 때는 detail이 **첫 줄**에 그려진다. 그래서 폴러가 만드는
 # detail 문구가 line2가 아니라 line1 목록에 들어간다 — 글꼴이 1px 더 크다.
+# 상태 문구는 리터럴로 베끼지 않고 formatting에서 가져온다. 손으로 베끼면
+# 문구를 고쳤을 때 테스트만 옛 문자열을 재고, 정작 화면에 가는 것은 안 잰다.
 LINE1 = [
     "10시간 14분 후 리셋",   # format_countdown 최장
     "곧 리셋",
-    "—",
-    "불러오는 중",              # 폴러 초기 상태
-    "아직 데이터가 없습니다",    # 한 번도 성공하지 못한 채 실패
-    "인증 재시도 중",           # 401 유예 구간
-    "데이터 형식이 바뀜",
-    "호출 한도 — 잠시 후 재시도",   # 첫 조회부터 429면 이것도 첫 줄에 온다
+    fmt.NO_RESET_TEXT,
+    fmt.LOADING_TEXT,         # 폴러 초기 상태
+    fmt.NO_DATA_TEXT,         # 한 번도 성공하지 못한 채 실패
+    fmt.AUTH_RETRY_TEXT,      # 401 유예 구간
+    fmt.SCHEMA_ERROR_TEXT,
+    fmt.RATE_LIMITED_TEXT,    # 첫 조회부터 429면 이것도 첫 줄에 온다
 ] + RELOGIN_HEADS
 LINE2 = RELOGIN_TAILS + [
-    "호출 한도 — 잠시 후 재시도",
+    fmt.RATE_LIMITED_TEXT,
     "120분째 갱신 실패",
     "23시간 전 갱신",
     "방금 갱신됨",
