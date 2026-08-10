@@ -53,7 +53,9 @@ def root():
 
 
 def _fits(root, px, text):
-    font = tkfont.Font(root=root, family="Segoe UI", size=-px)
+    # 실제로 화면에 쓰일 글꼴로 잰다. 여기에 이름을 손으로 박아두면 글꼴을
+    # 바꿨을 때 테스트만 옛 글꼴 폭을 재고, 정작 잘리는 문구는 아무도 못 잡는다.
+    font = tkfont.Font(root=root, family=ov.pick_font_family(root), size=-px)
     used = ov.BASE_TEXT_X + font.measure(text) + ov.BASE_RIGHT_MARGIN
     return used <= ov.BASE_WIDTH, used
 
@@ -68,6 +70,28 @@ def test_line1_fits(root, text):
 def test_line2_fits(root, text):
     ok, used = _fits(root, ov.BASE_FONT_LINE2_PX, text)
     assert ok, f"{used}px 필요 / 창 폭 {ov.BASE_WIDTH}px — {text!r}"
+
+
+def test_only_an_installed_family_is_chosen(root):
+    """Tk는 없는 글꼴을 조용히 기본 글꼴로 바꿔 그린다.
+
+    그래서 설치 여부를 확인하지 않으면 화면은 그럴듯한데 창 폭을 역산한
+    근거가 엉뚱한 글꼴 것이 된다. 넘치는 문구는 경고 없이 잘린다.
+    """
+    installed = {name.lower() for name in tkfont.families(root=root)}
+    assert ov.pick_font_family(root).lower() in installed
+
+
+def test_a_family_nobody_has_falls_back(root):
+    assert ov.pick_font_family(root, ("이런글꼴은없다",)) == ov.FALLBACK_FAMILY
+
+
+def test_pretendard_wins_when_it_is_installed(root):
+    """설치돼 있으면 Segoe UI보다 앞선다 — 한글까지 한 글꼴로 덮기 위해서다."""
+    installed = {name.lower() for name in tkfont.families(root=root)}
+    if "pretendard" not in installed:
+        pytest.skip("Pretendard가 설치돼 있지 않다")
+    assert ov.pick_font_family(root).lower().startswith("pretendard")
 
 
 def test_font_sizes_are_pixels_not_points():

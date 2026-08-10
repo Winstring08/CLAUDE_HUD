@@ -77,6 +77,18 @@ def fonts_dir() -> Path:
     return Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
 
 
+def user_fonts_dir() -> Path:
+    """계정에만 설치된 글꼴이 있는 곳.
+
+    글꼴을 우클릭해 "설치"를 누르면 관리자 권한 없이 여기로 들어간다.
+    시스템 Fonts 폴더만 보면 그렇게 깔린 글꼴을 통째로 놓친다.
+    """
+    base = os.environ.get("LOCALAPPDATA")
+    if not base:
+        return fonts_dir()
+    return Path(base) / "Microsoft" / "Windows" / "Fonts"
+
+
 def _metric(index: int) -> int:
     try:
         return int(ctypes.windll.user32.GetSystemMetrics(index))

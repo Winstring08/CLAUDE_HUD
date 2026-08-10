@@ -86,6 +86,24 @@ def test_full_usage_draws_no_digits():
     assert r > 200 and g < 180
 
 
+def test_digits_stay_inside_the_icon():
+    """글꼴을 바꾸면 같은 크기라도 폭이 달라진다.
+
+    16px에 두 자리 숫자는 Segoe UI로는 여유가 있지만 Pretendard로는 꽉 찬다.
+    가장자리 한 줄에 글자 잉크가 닿으면 잘려 보인다.
+    """
+    from claude_usage_overlay import theme
+
+    bg = tuple(int(theme.BG.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    for pct in (7.0, 42.0, 88.0, 99.0):
+        img = render_icon(state(Status.OK, pct), size=ICON)
+        for y in range(2, ICON - 2):
+            for x in (0, ICON - 1):
+                r, g, b, _a = img.getpixel((x, y))
+                # 채움 색이나 배경색일 수는 있어도 밝은 글자 잉크가 있으면 안 된다
+                assert not (r > 200 and g > 200 and b > 200), f"{pct}%에서 글자가 가장자리에 닿는다"
+
+
 def test_relogin_uses_grey_background():
     img = render_icon(HudState(Status.RELOGIN, None, "재로그인 필요"), size=ICON)
     r, g, b, _ = img.getpixel((8, 3))

@@ -21,6 +21,25 @@ python -m claude_usage_overlay
 
 트레이 메뉴의 "시작할 때 자동 실행"을 켜면 로그인 시 자동으로 뜬다.
 
+## 글꼴
+
+화면 문구는 **Pretendard**로 그린다. 윈도우 기본 글꼴인 Segoe UI에는 한글 글리프가
+없어서, 그대로 두면 숫자·영문과 한글이 서로 다른 글꼴로 섞여 나오기 때문이다.
+
+Pretendard가 깔려 있지 않으면 트레이 메뉴에 **"Pretendard 글꼴 설치"** 항목이 나온다.
+누르면 공식 배포처(GitHub `orioncactus/pretendard`)의 최신 릴리스에서 받아
+계정 글꼴 폴더에 설치한다. 관리자 권한은 필요 없고, 설치가 끝나면 항목이 사라진다.
+
+```
+%LOCALAPPDATA%\Microsoft\Windows\Fonts
+```
+
+설치하지 않아도 프로그램은 그대로 동작한다. 그때는 예전처럼 Segoe UI로 그린다.
+
+지우려면 위 폴더의 `Pretendard-Regular.ttf`·`Pretendard-Bold.ttf`를 삭제하고,
+레지스트리 `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts`에서
+`Pretendard Regular (TrueType)`·`Pretendard Bold (TrueType)` 값을 지우면 된다.
+
 ## 설정
 
 `%APPDATA%\claude-usage-overlay\config.json` — 트레이 메뉴의 "설정 파일 열기"로도 열 수 있다.

@@ -10,7 +10,15 @@ from PIL import Image, ImageDraw, ImageFont
 from . import theme, winmetrics
 from .models import HudState, Status
 
-FONT_FILES = ["segoeuib.ttf", "arialbd.ttf"]
+# 앞에서부터 있는 것을 쓴다. 시스템 Fonts와 사용자 Fonts 양쪽을 본다.
+FONT_FILES = [
+    "Pretendard-Bold.ttf",
+    "Pretendard-SemiBold.ttf",
+    "PretendardVariable.ttf",
+    "segoeuib.ttf",
+    "malgunbd.ttf",
+    "arialbd.ttf",
+]
 STALE_ALPHA = 115  # 255의 약 45%
 LOADING_TEXT = "…"  # 아직 값이 없음. SCHEMA_ERROR의 "?"와 구분된다
 
@@ -24,18 +32,47 @@ def _hex(color: str, alpha: int = 255) -> tuple[int, int, int, int]:
 
 
 def _font(size: int):
+    """FONT_FILES 순서가 디렉터리 순서보다 우선한다.
+
+    디렉터리를 바깥 루프에 두면, 사용자 Fonts에 있는 Pretendard보다 시스템
+    Fonts의 segoeuib가 먼저 잡혀 우선순위가 뒤집힌다.
+    """
     for name in FONT_FILES:
-        try:
-            return ImageFont.truetype(str(winmetrics.fonts_dir() / name), size)
-        except OSError:
-            continue
+        for directory in (winmetrics.fonts_dir(), winmetrics.user_fonts_dir()):
+            try:
+                return ImageFont.truetype(str(directory / name), size)
+            except OSError:
+                continue
     return ImageFont.load_default()
+
+
+TEXT_RATIO = 0.72   # 아이콘 높이 대비 글자 크기의 출발점
+SIDE_MARGIN = 2     # 좌우로 이만큼은 남긴다
+
+
+def _fitted_font(draw, size: int, text: str):
+    """아이콘 폭에 실제로 들어가는 가장 큰 글꼴.
+
+    글꼴마다 같은 크기라도 폭이 다르다 — 16px 아이콘에서 두 자리 숫자는
+    Segoe UI로는 여유가 있지만 Pretendard로는 좌우가 꽉 찬다. 비율을
+    하나로 못박으면 글꼴을 바꿀 때마다 이 자리가 조용히 깨지므로,
+    넘치지 않을 때까지 1px씩 줄여서 고른다.
+    """
+    px = max(6, int(size * TEXT_RATIO))
+    font = _font(px)
+    while px > 6:
+        box = draw.textbbox((0, 0), text, font=font)
+        if box[2] - box[0] <= size - SIDE_MARGIN * 2:
+            break
+        px -= 1
+        font = _font(px)
+    return font
 
 
 def _centered_text(size: int, text: str, color: str) -> Image.Image:
     layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
-    font = _font(max(8, int(size * 0.70)))
+    font = _fitted_font(draw, size, text)
     box = draw.textbbox((0, 0), text, font=font)
     x = (size - (box[2] - box[0])) / 2 - box[0]
     y = (size - (box[3] - box[1])) / 2 - box[1]

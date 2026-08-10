@@ -8,6 +8,7 @@ resets_at에서 로컬로 계산한다. 화면은 매초 살아 움직이고 API
 """
 
 import tkinter as tk
+import tkinter.font as tkfont
 from datetime import datetime, timezone
 
 from PIL import ImageTk
@@ -43,11 +44,36 @@ BASE_FONT_PCT_PX = 13
 BASE_FONT_LINE1_PX = 12
 BASE_FONT_LINE2_PX = 11
 
+# 앞에서부터 **설치돼 있는 것**을 쓴다. Segoe UI는 한글 글리프가 없어
+# 한글만 Tk가 고른 다른 글꼴로 그려지므로, 한글까지 한 글꼴로 덮는
+# Pretendard를 앞에 둔다. Pretendard가 없으면 예전 그대로 Segoe UI다.
+#
+# 맑은 고딕을 사이에 두지 않는다. 한글 로케일에서 families()가 "맑은 고딕"
+# 이라는 한글 이름으로 내놓아 "Malgun Gothic"으로는 잡히지도 않고, 잡히면
+# 잡히는 대로 Pretendard를 안 깐 사람의 화면이 멋대로 바뀐다.
+FONT_CANDIDATES = ("Pretendard Variable", "Pretendard", "Segoe UI")
+FALLBACK_FAMILY = "Segoe UI"
+
 # 값이 낡은 상태. 아이콘과 같은 기준을 쓴다.
 DIM_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
 
 
-def fonts_for(scale: float) -> dict[str, tuple]:
+def pick_font_family(root: tk.Misc, candidates=FONT_CANDIDATES) -> str:
+    """후보 중 **실제로 설치된** 첫 글꼴 이름. 없으면 FALLBACK_FAMILY.
+
+    이 확인을 건너뛰고 이름만 적으면 안 된다. Tk는 없는 글꼴을 조용히
+    기본 글꼴로 바꿔 그리므로 화면은 그럴듯한데, 창 폭을 역산한 근거
+    (tests/test_overlay_layout.py)는 엉뚱한 글꼴을 잰 값이 된다. 글꼴이
+    바뀌면 글자 폭도 바뀌고, 넘치는 문구는 create_text가 말없이 잘라낸다.
+    """
+    installed = {name.lower() for name in tkfont.families(root=root)}
+    for name in candidates:
+        if name.lower() in installed:
+            return name
+    return FALLBACK_FAMILY
+
+
+def fonts_for(scale: float, family: str = FALLBACK_FAMILY) -> dict[str, tuple]:
     """글꼴 크기를 **픽셀**로 만든다. Tk에서 음수 = 픽셀, 양수 = 포인트다.
 
     포인트로 주면 안 된다. enable_dpi_awareness()를 켜는 순간 Tk의
@@ -62,9 +88,9 @@ def fonts_for(scale: float) -> dict[str, tuple]:
     캔버스 치수와 정확히 같은 비율로 커진다.
     """
     return {
-        "pct": ("Segoe UI", -round(BASE_FONT_PCT_PX * scale), "bold"),
-        "line1": ("Segoe UI", -round(BASE_FONT_LINE1_PX * scale)),
-        "line2": ("Segoe UI", -round(BASE_FONT_LINE2_PX * scale)),
+        "pct": (family, -round(BASE_FONT_PCT_PX * scale), "bold"),
+        "line1": (family, -round(BASE_FONT_LINE1_PX * scale)),
+        "line2": (family, -round(BASE_FONT_LINE2_PX * scale)),
     }
 
 
@@ -81,7 +107,8 @@ class Overlay:
         self._text_x = round(BASE_TEXT_X * s)
         self._line1_y = round(BASE_LINE1_Y * s)
         self._line2_y = round(BASE_LINE2_Y * s)
-        fonts = fonts_for(s)
+        self._family = pick_font_family(root)
+        fonts = fonts_for(s, self._family)
         self._font_pct = fonts["pct"]
         self._font_line1 = fonts["line1"]
         self._font_line2 = fonts["line2"]
