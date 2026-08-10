@@ -155,10 +155,22 @@ def test_digits_stay_inside_the_icon():
                 assert not (r > 200 and g > 200 and b > 200), f"{pct}%에서 글자가 가장자리에 닿는다"
 
 
+def _has_grey_background(img):
+    """회색 배경이 실제로 칠해졌는지.
+
+    특정 좌표를 찍지 않는다. 가운데 정렬된 기호(!·?·…)의 크기가 바뀌면
+    그 좌표를 덮어버려서, 배경이 멀쩡한데도 테스트가 깨진다.
+    """
+    from claude_usage_overlay import theme
+
+    grey = tuple(int(theme.GREY.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    return grey in {img.getpixel((x, y))[:3] for y in range(ICON) for x in range(ICON)}
+
+
 def test_relogin_uses_grey_background():
-    img = render_icon(HudState(Status.RELOGIN, None, "재로그인 필요"), size=ICON)
-    r, g, b, _ = img.getpixel((8, 3))
-    assert abs(r - g) < 30 and abs(g - b) < 30, "회색이어야 한다"
+    assert _has_grey_background(
+        render_icon(HudState(Status.RELOGIN, None, "재로그인 필요"), size=ICON)
+    )
 
 
 def test_stale_is_dimmed():
@@ -177,8 +189,7 @@ def test_rate_limited_is_dimmed_too():
 def test_schema_error_uses_grey_background():
     img = render_icon(HudState(Status.SCHEMA_ERROR, None, "데이터 형식이 바뀜"), size=ICON)
     assert img.size == (ICON, ICON)
-    r, g, b, _ = img.getpixel((8, 3))
-    assert abs(r - g) < 30 and abs(g - b) < 30, "값이 없으면 회색이다"
+    assert _has_grey_background(img), "값이 없으면 회색이다"
 
 
 LOADING = HudState(Status.STALE, None, "불러오는 중")   # 폴러의 초기 상태 그대로
@@ -191,5 +202,4 @@ def test_loading_is_not_drawn_as_a_schema_error():
 
 
 def test_loading_uses_grey_background():
-    r, g, b, _ = render_icon(LOADING, size=ICON).getpixel((8, 3))
-    assert abs(r - g) < 30 and abs(g - b) < 30, "값이 없으면 회색이다"
+    assert _has_grey_background(render_icon(LOADING, size=ICON)), "값이 없으면 회색이다"
