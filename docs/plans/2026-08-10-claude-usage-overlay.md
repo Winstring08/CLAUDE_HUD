@@ -411,11 +411,25 @@ git commit -m "feat: urllib 기반 HTTP 어댑터 추가"
 **Interfaces:**
 - Consumes: 없음
 - Produces: `Config` 데이터클래스(필드 `x`, `y`, `poll_seconds`, `warn_pct`, `danger_pct`, `overlay_visible`),
-  `config_path() -> Path`, `load_config(path: Path | None = None) -> Config`, `save_config(cfg: Config, path: Path | None = None) -> None`
+  `config_path() -> Path`, `load_config(path: Path | None = None) -> Config`, `save_config(cfg: Config, path: Path | None = None) -> None`,
+  상수 `MIN_POLL_SECONDS`, `UI_OWNED`
 
 설정 파일이 없거나 깨져 있으면 **예외를 던지지 않고 기본값을 쓴다.** 설정 하나 때문에 HUD 전체가 안 뜨면 안 된다.
 
 **"깨져 있으면"에는 값의 타입이 틀린 것도 포함된다.** 이 파일은 트레이 메뉴 "설정 파일 열기"로 사용자가 메모장으로 직접 고치는 파일이고, `pythonw`에는 콘솔이 없어서 예외를 던지면 원인조차 화면에 남지 않는다. `{"poll_seconds": null}` 하나로 HUD가 아예 안 뜬다. **JSON 파싱만 감싸는 것으로는 부족하고, 필드별로 타입을 강제한 뒤 실패한 값을 버려야 한다.**
+
+**저장할 때 파일 전체를 쓰지 않는다. UI가 소유한 세 필드만 덮어쓴다.** 이 파일은 두 주인이 나눠 갖는다 — `x`·`y`·`overlay_visible`은 프로그램이 드래그와 메뉴로 바꾸고, `poll_seconds`·`warn_pct`·`danger_pct`는 사용자가 메모장으로 바꾼다. 그런데 `config`는 기동 시 한 번만 읽히므로 프로그램이 들고 있는 뒤쪽 세 값은 **기동 시점에서 멈춰 있다.** 전체를 통째로 쓰면 그 옛 값이 사용자의 편집 위에 덮인다. 실측:
+
+```
+사용자 편집 후:  {"poll_seconds": 900, "warn_pct": 50, ...}
+드래그 한 번 후: {"poll_seconds": 300, "warn_pct": 70, "x": 100, "y": 200}
+```
+
+오버레이를 한 번 옮기거나 트레이에서 "오버레이 숨기기"를 누르는 것만으로 편집이 사라진다. 둘 다 `save_config`를 부르기 때문이다. 게다가 조용히 사라져서 사용자는 자기가 파일을 잘못 썼다고 생각하게 된다 — 스펙 4장이 트레이 메뉴에 "설정 파일 열기"를 넣은 이상 직접 편집은 지원 경로이고, 그 경로가 이렇게 무너지면 메뉴 항목이 함정이 된다.
+
+그래서 `save_config`는 디스크의 현재 내용을 읽어 그 위에 `UI_OWNED` 셋만 얹는다. 파일이 아직 없을 때만 전체를 쓴다 — 트레이 메뉴가 파일을 처음 만들 때 사용자가 고칠 키가 다 보여야 하기 때문이다.
+
+**다만 편집이 곧바로 적용되지는 않는다.** `poll_seconds`를 고쳐도 다음 실행부터 반영된다. 값을 잃지 않는 것과 즉시 반영은 다른 문제이고, 후자는 폴러의 대기 주기를 실행 중에 갈아끼우는 일이라 범위 밖이다. README에 그렇게 적는다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -500,6 +514,40 @@ def test_overlay_visible_only_accepts_a_real_bool(tmp_path):
 def test_every_config_field_has_a_coercion_rule():
     """Config에 필드를 추가하고 _TYPES를 안 고치면 그 설정이 조용히 무시된다."""
     assert set(Config.__dataclass_fields__) == set(config._TYPES)
+
+
+def test_manual_edits_survive_a_position_save(tmp_path):
+    """config는 기동 시 한 번만 읽는다. 저장할 때 전체를 쓰면 오버레이를 한 번
+    드래그하는 것만으로 사용자의 편집이 기동 시점 값으로 덮여 조용히 사라진다.
+
+    "설정 파일 열기"가 트레이 메뉴에 있는 이상 직접 편집은 지원 경로다.
+    """
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"poll_seconds": 900}), encoding="utf-8")
+    cfg = load_config(p)                                            # 기동
+    p.write_text(json.dumps({"poll_seconds": 1200, "warn_pct": 50}), encoding="utf-8")
+    cfg.x, cfg.y = 100, 200                                         # 드래그
+    save_config(cfg, p)
+
+    after = load_config(p)
+    assert after.poll_seconds == 1200
+    assert after.warn_pct == 50
+    assert (after.x, after.y) == (100, 200)
+
+
+def test_first_save_writes_every_field(tmp_path):
+    """트레이 메뉴가 파일을 처음 만들 때는 고칠 키가 다 보여야 한다."""
+    p = tmp_path / "config.json"
+    save_config(Config(poll_seconds=600), p)
+    assert set(json.loads(p.read_text(encoding="utf-8"))) == set(Config.__dataclass_fields__)
+
+
+def test_save_survives_a_broken_file_on_disk(tmp_path):
+    """읽어서 병합하는 코드가 깨진 파일에서 예외를 던지면 안 된다."""
+    p = tmp_path / "config.json"
+    p.write_text("{ not json", encoding="utf-8")
+    save_config(Config(x=1, y=2), p)
+    assert load_config(p).x == 1
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
@@ -547,6 +595,11 @@ _TYPES = {
 }
 
 
+# 프로그램이 바꾸는 값은 이 셋뿐이다. 나머지(poll_seconds·warn_pct·danger_pct)는
+# 사용자가 메모장으로 고치는 값이라 저장할 때 건드리지 않는다.
+UI_OWNED = ("x", "y", "overlay_visible")
+
+
 def config_path() -> Path:
     base = os.environ.get("APPDATA") or str(Path.home())
     return Path(base) / "claude-usage-overlay" / "config.json"
@@ -591,17 +644,36 @@ def load_config(path: Path | None = None) -> Config:
 
 
 def save_config(cfg: Config, path: Path | None = None) -> None:
+    """디스크의 현재 내용 위에 UI가 소유한 값만 덮어쓴다.
+
+    전체를 통째로 쓰면 안 된다. config는 기동 시 한 번만 읽으므로 우리가 들고
+    있는 poll_seconds·warn_pct·danger_pct는 기동 시점에서 멈춰 있다. 사용자가
+    "설정 파일 열기"로 그 값을 고친 뒤 오버레이를 한 번 드래그하기만 해도
+    옛 값이 편집 위에 덮여 조용히 사라진다.
+
+    파일이 아직 없으면(트레이 메뉴가 처음 만드는 경우) 전체를 쓴다.
+    사용자가 고칠 키가 다 보여야 하기 때문이다.
+    """
     path = path or config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raw = {}
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+
+    data = {**raw, **{k: getattr(cfg, k) for k in UI_OWNED}} if raw else asdict(cfg)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 ```
 
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_config.py -v`
-Expected: PASS (9 passed)
+Expected: PASS (12 passed)
 
 - [ ] **Step 5: 커밋**
 
@@ -3515,6 +3587,10 @@ python -m claude_usage_overlay
 | `warn_pct` | 70 | 노란색으로 바뀌는 사용률 |
 | `danger_pct` | 90 | 빨간색으로 바뀌는 사용률 |
 | `x`, `y` | 없음 | 오버레이 위치. 드래그하면 자동 저장 |
+| `overlay_visible` | `true` | 오버레이 표시 여부. 트레이 메뉴로 바뀐다 |
+
+`poll_seconds`·`warn_pct`·`danger_pct`를 손으로 고치면 **다음 실행부터** 적용된다. 프로그램은
+저장할 때 `x`·`y`·`overlay_visible`만 덮어쓰므로 고쳐둔 값이 사라지지는 않는다.
 
 ## 주의
 
