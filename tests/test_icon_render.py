@@ -43,24 +43,79 @@ def test_default_size_follows_system_metric():
     assert img.size == (winmetrics.system_icon_size(),) * 2
 
 
-def test_low_usage_fills_bottom_with_green():
+def _rgb_of(color: str):
+    color = color.lstrip("#")
+    return tuple(int(color[i : i + 2], 16) for i in (0, 2, 4))
+
+
+def test_low_usage_fills_bottom_with_the_ok_color():
+    """색은 theme에서 가져와 비교한다. 임계값을 손으로 적으면 색을 바꿀 때
+    테스트만 옛 값을 재고, 정작 화면에 나가는 색은 아무도 안 본다."""
+    from claude_usage_overlay import theme
+
     img = render_icon(state(Status.OK, 23.0), size=ICON)
-    r, g, b, a = img.getpixel(FILL_PX)       # 바닥 왼쪽 — 채움 영역
-    assert g > r and g > b, "바닥은 초록이어야 한다"
-    r2, g2, b2, _ = img.getpixel((1, 1))     # 꼭대기 — 빈 영역
-    assert g2 < 120, "꼭대기는 어두운 배경이어야 한다"
+    assert img.getpixel(FILL_PX)[:3] == _rgb_of(theme.FILL_GREEN)
+    assert img.getpixel((1, 1))[:3] == _rgb_of(theme.BG), "꼭대기는 빈 영역이다"
 
 
-def test_warn_band_fills_yellow():
+def test_warn_band_fills_the_warn_color():
+    from claude_usage_overlay import theme
+
     img = render_icon(state(Status.OK, 75.0), size=ICON)
-    r, g, b, _ = img.getpixel(FILL_PX)
-    assert r > 200 and g > 150 and b < 150, "주의 구간은 노랑이어야 한다"
+    assert img.getpixel(FILL_PX)[:3] == _rgb_of(theme.FILL_YELLOW)
 
 
-def test_danger_band_fills_red():
+def test_danger_band_fills_the_danger_color():
+    from claude_usage_overlay import theme
+
     img = render_icon(state(Status.OK, 95.0), size=ICON)
-    r, g, b, _ = img.getpixel(FILL_PX)
-    assert r > 200 and g < 180, "위험 구간은 빨강이어야 한다"
+    assert img.getpixel(FILL_PX)[:3] == _rgb_of(theme.FILL_RED)
+
+
+MIN_FILL_CONTRAST = 2.5
+
+
+def test_fill_colors_keep_white_text_readable():
+    """흰 숫자를 얹을 배경이므로 명도 대비에 하한을 둔다.
+
+    지금 값(초록 3.2 · 주황 2.7 · 빨강 4.1)은 색감을 우선해 고른 것이라
+    일반 권장선인 4.5에는 못 미친다. 그래서 여기서 지키는 것은 "가장 좋은
+    대비"가 아니라 **더 나빠지지 않는 것**이다 — 원래의 밝은 색으로
+    되돌리면 1.3~1.8까지 떨어져 숫자가 배경에 통째로 묻힌다.
+    """
+    from claude_usage_overlay import theme
+
+    def luminance(color):
+        parts = [v / 255 for v in _rgb_of(color)]
+        parts = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in parts]
+        return 0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]
+
+    def contrast(a, b):
+        la, lb = luminance(a), luminance(b)
+        hi, lo = max(la, lb), min(la, lb)
+        return (hi + 0.05) / (lo + 0.05)
+
+    for fill in (theme.FILL_GREEN, theme.FILL_YELLOW, theme.FILL_RED):
+        got = contrast(theme.TEXT_LIGHT, fill)
+        assert got >= MIN_FILL_CONTRAST, f"{fill} 위 흰 글자 대비가 {got:.1f}로 너무 낮다"
+
+
+def test_digits_are_a_single_colour():
+    """수위 경계에서 색을 뒤집지 않는다.
+
+    16px에서는 한 숫자가 위아래로 쪼개져 흰 부분만 글자처럼 보이고
+    나머지는 배경에 묻혔다. 숫자 잉크는 흰색 계열 하나여야 한다.
+    """
+    from claude_usage_overlay import theme
+
+    img = render_icon(state(Status.OK, 62.0), size=ICON)   # 수위가 글자 한가운데
+    dark_ink = [
+        (x, y)
+        for y in range(2, ICON - 2)
+        for x in range(3, ICON - 3)
+        if sum(img.getpixel((x, y))[:3]) < sum(_rgb_of(theme.BG)) - 40
+    ]
+    assert not dark_ink, f"어두운 글자 픽셀이 남아 있다: {dark_ink[:5]}"
 
 
 def test_fill_height_grows_with_usage():

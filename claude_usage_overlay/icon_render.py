@@ -1,8 +1,11 @@
 """HudState → 16×16 트레이 아이콘. 순수 함수라 UI 없이 테스트할 수 있다.
 
-수위 경계에서 숫자 색을 반전시킨다. PIL에는 클리핑이 없으므로
-밝은 글자 레이어와 어두운 글자 레이어를 따로 그린 뒤 수위선을 기준으로
-잘라 합성한다.
+**숫자는 항상 흰색 하나다.** 예전에는 수위 경계에서 색을 뒤집었는데,
+16px에서는 한 숫자가 위아래로 쪼개져 오히려 읽기 어려웠다 — 흰 부분만
+글자로 보이고 나머지는 배경에 묻힌다.
+
+그래서 색을 나누는 대신 채움을 어둡게 골랐다. theme.FILL_* 는 채도를 94%
+이상 유지한 채 명도만 낮춘 값이고, 그 위에서 흰 숫자가 항상 이긴다.
 """
 
 from PIL import Image, ImageDraw, ImageFont
@@ -154,7 +157,8 @@ def render_icon(
         return _symbol_icon(size, theme.GREY, LOADING_TEXT, theme.TEXT_DIM)
 
     pct = max(0.0, min(100.0, state.snapshot.five_hour_pct))
-    fill_color = theme.color_for(pct, warn, danger)
+    # 링과 다른 색표를 쓴다. 여기는 흰 숫자를 얹을 배경이라 어두워야 한다.
+    fill_color = theme.fill_color_for(pct, warn, danger)
 
     if pct >= 100:
         img = _cross_icon(size, fill_color)
@@ -172,17 +176,10 @@ def render_icon(
         ImageDraw.Draw(mask).rectangle([(0, fill_top), (size, size)], fill=255)
         img.paste(fill_layer, (0, 0), mask)
 
-    # 숫자를 두 번 그리고 수위선에서 잘라 합친다
-    text = str(int(round(pct)))
-    light = _centered_text(size, text, theme.TEXT_LIGHT)
-    dark = _centered_text(size, text, theme.TEXT_DARK)
-
-    above = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(above).rectangle([(0, 0), (size, fill_top)], fill=255)
-    below = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(below).rectangle([(0, fill_top), (size, size)], fill=255)
-
-    img.paste(light, (0, 0), Image.composite(light.getchannel("A"), above.point(lambda _: 0), above))
-    img.paste(dark, (0, 0), Image.composite(dark.getchannel("A"), below.point(lambda _: 0), below))
+    # 숫자는 흰색 하나로 그린다. 배경(어두운 바탕이든 어두운 채움이든)
+    # 어디에 얹혀도 대비가 충분하므로 색을 나눌 이유가 없다.
+    img = Image.alpha_composite(
+        img, _centered_text(size, str(int(round(pct))), theme.TEXT_LIGHT)
+    )
 
     return _dim(img) if state.status in DIM_STATUSES else img
