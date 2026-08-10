@@ -13,8 +13,17 @@ def package_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def is_frozen() -> bool:
+    """PyInstaller로 묶인 exe로 실행 중인지. 그때는 sys.executable이 우리 exe다."""
+    return bool(getattr(sys, "frozen", False))
+
+
 def build_command() -> str:
     """콘솔 창이 뜨지 않도록 pythonw.exe로 실행하고, 패키지 경로를 함께 넘긴다.
+
+    **exe로 묶였을 때는 이야기가 다르다.** sys.executable이 파이썬이 아니라
+    우리 exe이므로 `-c "..."`를 붙이면 그 문자열이 앱의 argv로 넘어가 버린다.
+    그때는 exe 경로 하나면 충분하다.
 
     `pythonw -m claude_usage_overlay`만으로는 안 된다. 시작 프로그램의 cwd는
     저장소가 아니라 대개 system32이고 이 패키지는 어디에도 설치되지 않으므로
@@ -26,6 +35,9 @@ def build_command() -> str:
     하나라도 있으면 CommandLineToArgvW가 이 값을 잘못 쪼갠다. 경로에 슬래시를
     쓰는 것도 같은 이유다 — 백슬래시가 파이썬 문자열 안에서 이스케이프로 읽힌다.
     """
+    if is_frozen():
+        return f'"{sys.executable}"'
+
     exe = sys.executable.replace("python.exe", "pythonw.exe")
     code = (
         "import sys, runpy; "

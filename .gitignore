@@ -4,3 +4,8 @@ __pycache__/
 .venv/
 venv/
 .superpowers/
+
+# PyInstaller 산출물
+build/
+dist/
+*.spec

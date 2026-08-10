@@ -37,6 +37,28 @@ def test_command_handles_already_pythonw(monkeypatch):
     assert autostart.build_command().count("pythonw.exe") == 1
 
 
+def test_frozen_exe_registers_itself_directly(monkeypatch):
+    """exe로 묶이면 sys.executable이 우리 exe다.
+
+    거기에 `-c "..."`를 붙이면 그 문자열이 파이썬 코드가 아니라 앱의 argv로
+    넘어가고, 자동 실행은 조용히 엉뚱하게 동작한다. exe 경로 하나면 된다.
+    """
+    monkeypatch.setattr(sys, "executable", r"D:\Apps\ClaudeUsageOverlay.exe")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    cmd = autostart.build_command()
+    assert cmd == r'"D:\Apps\ClaudeUsageOverlay.exe"'
+    assert " -c " not in cmd
+    assert "runpy" not in cmd
+
+
+def test_source_run_still_uses_python(monkeypatch):
+    """소스로 돌릴 때는 예전 그대로여야 한다."""
+    monkeypatch.setattr(sys, "executable", r"C:\Python312\python.exe")
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert "runpy" in autostart.build_command()
+
+
 def test_registry_constants_target_current_user():
     assert autostart.RUN_KEY == r"Software\Microsoft\Windows\CurrentVersion\Run"
     assert autostart.VALUE_NAME == "ClaudeUsageOverlay"
