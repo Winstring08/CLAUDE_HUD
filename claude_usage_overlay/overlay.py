@@ -10,7 +10,10 @@ resets_at에서 로컬로 계산한다. 화면은 매초 살아 움직이고 API
 import tkinter as tk
 from datetime import datetime, timezone
 
+from PIL import ImageTk
+
 from . import theme
+from .ring_render import render_ring
 from .config import Config, save_config
 from .formatting import format_age, format_countdown
 from .models import HudState, Status
@@ -103,6 +106,10 @@ class Overlay:
             widget.bind("<Button-1>", self._on_press)
             widget.bind("<B1-Motion>", self._on_drag)
             widget.bind("<ButtonRelease-1>", self._on_release)
+
+        # 링 그림 캐시. PhotoImage는 참조가 끊기면 화면에서 사라진다.
+        self._ring_key: tuple | None = None
+        self._ring_photo: ImageTk.PhotoImage | None = None
 
         self._state = HudState(Status.STALE, None, "불러오는 중")
         self._visible = config.overlay_visible
@@ -217,12 +224,12 @@ class Overlay:
         color = theme.color_for(pct, self._config.warn_pct, self._config.danger_pct)
         dim = state.status in DIM_STATUSES
 
-        self._draw_ring(pct, "#3a3f4b" if dim else color)
+        self._draw_ring(pct, theme.RING_DIM if dim else color)
         c.create_text(
             (self._ring[0] + self._ring[2]) / 2,
             (self._ring[1] + self._ring[3]) / 2,
             text=f"{int(round(pct))}%",
-            fill="#6d7280" if dim else theme.TEXT_LIGHT,
+            fill=theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT,
             font=self._font_pct,
         )
 
@@ -235,19 +242,31 @@ class Overlay:
         else:
             line2, line2_color = format_age(snap.fetched_at, now), theme.TEXT_DIM
 
-        self._draw_text(line1, "#6d7280" if dim else theme.TEXT_LIGHT, line2, line2_color)
+        self._draw_text(
+            line1, theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT, line2, line2_color
+        )
 
     def _draw_ring(self, pct: float, color: str) -> None:
+        """링은 캔버스가 아니라 PIL이 그린다.
+
+        create_arc에는 안티앨리어싱이 없어 곡선이 픽셀 계단으로 드러난다.
+        ring_render는 크게 그려 축소하므로 경계가 매끈하다.
+
+        그림은 (크기, 정수 %, 색)이 바뀔 때만 다시 만든다. _redraw는 1초마다
+        도는데 사용률은 5분에 한 번만 움직이므로 대부분 캐시가 그대로 쓰인다.
+        PhotoImage는 참조를 놓으면 가비지 컬렉션되어 화면에서 사라지므로
+        self에 붙들고 있어야 한다.
+        """
         x0, y0, x1, y1 = self._ring
-        self._canvas.create_arc(
-            x0, y0, x1, y1, start=0, extent=359.9, style=tk.ARC,
-            outline="#333845", width=self._ring_width,
-        )
-        if pct > 0:
-            self._canvas.create_arc(
-                x0, y0, x1, y1, start=90, extent=-max(1.0, 359.9 * pct / 100.0),
-                style=tk.ARC, outline=color, width=self._ring_width,
+        key = (x1 - x0, int(round(pct)), color)
+        if key != self._ring_key:
+            self._ring_photo = ImageTk.PhotoImage(
+                render_ring(
+                    x1 - x0, pct, color, bg=theme.BG, width=self._ring_width
+                )
             )
+            self._ring_key = key
+        self._canvas.create_image(x0, y0, image=self._ring_photo, anchor="nw")
 
     def _draw_text(self, line1: str, color1: str, line2: str, color2: str) -> None:
         self._canvas.create_text(
