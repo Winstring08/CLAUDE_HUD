@@ -103,6 +103,15 @@ class CredentialStore:
             raise ReloginRequired(RELOGIN_MSG)
 
         try:
+            # **요청을 보내기 전에** 저장할 수 있는지 확인한다.
+            #
+            # 서버는 새 토큰을 내주는 순간 옛 refreshToken을 무효화한다. 그때
+            # 우리가 저장에 실패하면 새 값도 옛 값도 없어져 사용자가 재로그인해야
+            # 한다 — 이 프로그램이 사용자에게 입힐 수 있는 유일한 되돌릴 수 없는
+            # 피해다. 저장 실패의 대부분(권한·디스크 부족)은 미리 알 수 있으므로,
+            # 회전을 시작하기 전에 걸러낸다. 여기서 실패하면 아직 아무 일도
+            # 일어나지 않았으므로 다음 폴링에 그대로 다시 시도하면 된다.
+            self._check_writable()
             issued = self._request_tokens(refresh_token)
         except ReloginRequired:
             raise
@@ -115,6 +124,21 @@ class CredentialStore:
 
         self._save(issued, now)
         return issued["access_token"]
+
+    def _check_writable(self) -> None:
+        """실제로 파일을 쓸 수 있는지 미리 시험한다. 못 쓰면 OSError.
+
+        진짜 파일은 건드리지 않는다. 같은 폴더에 탐침 파일을 만들었다 지운다 —
+        같은 폴더여야 권한과 디스크 여유를 제대로 본다.
+        """
+        probe = self._path.with_suffix(".json.probe")
+        try:
+            probe.write_text("{}", encoding="utf-8")
+        finally:
+            try:
+                probe.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _request_tokens(self, refresh_token: str) -> dict:
         res = self._request(

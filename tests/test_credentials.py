@@ -411,3 +411,42 @@ def test_scope_string_is_stored_as_a_list(tmp_path):
     ).get_access_token()
 
     assert _read_creds(p)["scopes"] == ["user:profile", "user:inference"]
+
+
+def test_write_is_checked_before_the_token_is_rotated(tmp_path):
+    """저장 못 할 상황이면 **회전을 시작조차 하지 않는다.**
+
+    서버가 새 토큰을 내주는 순간 옛 refreshToken은 무효가 된다. 그때 저장에
+    실패하면 양쪽 다 잃고 사용자가 재로그인해야 한다 — 이 프로그램이 입힐 수
+    있는 유일한 되돌릴 수 없는 피해다. 미리 걸러내면 그 창이 닫힌다.
+    """
+    p = tmp_path / ".credentials.json"
+    write_creds(p, expires_at=NOW_MS - 1000)
+    calls = []
+
+    class Unwritable(CredentialStore):
+        def _check_writable(self):
+            raise OSError("디스크에 쓸 수 없음")
+
+    store = Unwritable(path=p, now_ms=lambda: NOW_MS, request_fn=_issuer(calls=calls))
+    with pytest.raises(ReloginRequired):
+        store.get_access_token()
+
+    assert calls == [], "쓸 수 없으면 갱신 요청을 보내면 안 된다"
+    assert _read_creds(p)["refreshToken"] == "ref-old"
+
+
+def test_write_check_leaves_no_probe_file(tmp_path):
+    p = tmp_path / ".credentials.json"
+    write_creds(p, expires_at=NOW_MS - 1000)
+    CredentialStore(path=p, now_ms=lambda: NOW_MS, request_fn=_issuer()).get_access_token()
+    assert not list(tmp_path.glob("*.probe"))
+
+
+def test_write_check_does_not_disturb_the_real_file(tmp_path):
+    """탐침이 진짜 파일을 건드리면 그 자체가 사고다."""
+    p = tmp_path / ".credentials.json"
+    write_creds(p, expires_at=NOW_MS + 8 * HOUR_MS)
+    before = p.read_bytes()
+    CredentialStore(path=p, now_ms=lambda: NOW_MS)._check_writable()
+    assert p.read_bytes() == before
