@@ -49,21 +49,25 @@ def test_work_area_excludes_the_taskbar():
     assert bottom - top <= screen_h
 
 
-def test_dark_title_bar_succeeds_on_this_windows():
+def test_dark_title_bar_succeeds_on_this_windows(root):
     """DwmSetWindowAttribute(hwnd, 20, TRUE)가 rc=0을 돌려주는지 실제로 본다.
     Windows 10 초기 판올림에는 이 속성이 없어 실패하는데, 그때는 제목 표시줄만
-    밝게 뜰 뿐이라 조용히 넘어간다 (스펙 11장)."""
+    밝게 뜰 뿐이라 조용히 넘어간다 (스펙 11장).
+
+    루트는 conftest.py의 세션 픽스처다 — 여기서 tk.Tk()를 따로 만들면 그 뒤에
+    오는 Tk 테스트가 통째로 죽는다 (conftest 머리말).
+    """
     import tkinter as tk
 
     from claude_usage_overlay.winmetrics import dark_title_bar
 
-    root = tk.Tk()
+    win = tk.Toplevel(root)
     try:
-        root.update_idletasks()
-        hwnd = int(root.wm_frame(), 16)
+        win.update_idletasks()
+        hwnd = int(win.wm_frame(), 16)
         assert dark_title_bar(hwnd) is True
     finally:
-        root.destroy()
+        win.destroy()
 
 
 def test_dark_title_bar_is_quiet_on_a_bogus_handle():

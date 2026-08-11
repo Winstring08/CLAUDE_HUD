@@ -1,9 +1,10 @@
 """잉크 중앙 정렬. 창을 띄우지 않고 재는 것들이다.
 
 Tk 인스턴스가 필요한 것은 ascent 하나뿐이고, 나머지는 PIL과 순수 산수다.
+그 루트는 conftest.py의 세션 픽스처를 쓴다 — 모듈마다 만들면 두 번째 것이
+이 환경에서 죽는다 (그쪽 머리말에 실측이 있다).
 """
 
-import tkinter as tk
 import tkinter.font as tkfont
 
 import pytest
@@ -11,14 +12,6 @@ import pytest
 from claude_usage_overlay import text_center
 from claude_usage_overlay.font_install import font_file_for
 from claude_usage_overlay.text_center import Ink, center_start, measure_ink, nw_xy
-
-
-@pytest.fixture(scope="module")
-def root():
-    r = tk.Tk()
-    r.withdraw()
-    yield r
-    r.destroy()
 
 
 def test_the_spare_half_pixel_goes_up():

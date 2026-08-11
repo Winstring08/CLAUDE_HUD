@@ -9,9 +9,11 @@
 문자열은 아무도 안 잰다.
 
 **LINE1·LINE2와 창 폭 190px은 자세히 모드 근거다.**
+
+Tk 루트는 conftest.py의 세션 픽스처를 쓴다 — 모듈마다 만들면 두 번째 것이
+이 환경에서 죽는다 (그쪽 머리말에 실측이 있다).
 """
 
-import tkinter as tk
 import tkinter.font as tkfont
 
 import pytest
@@ -47,14 +49,6 @@ LINE2 = RELOGIN_TAILS + [
     "23시간 전 갱신",
     "방금 갱신됨",
 ]
-
-
-@pytest.fixture(scope="module")
-def root():
-    r = tk.Tk()
-    r.withdraw()
-    yield r
-    r.destroy()
 
 
 def _fits(root, px, text):
