@@ -6,6 +6,12 @@ ttk.Scale은 윈도우 기본 테마에서 색이 먹지 않고, 무엇보다 **
 
 값↔픽셀 환산은 순수 함수로 빼서 창 없이 테스트한다. 여기가 조용히 틀리면
 화면에서는 "손잡이가 끝까지 안 간다"로 보여서 원인을 찾기 어렵다.
+
+**트랙이 나타내는 구간(lo~hi)과 고를 수 있는 값의 범위는 다른 것이다.** 앞의 것은
+고정이고, 상대 슬라이더 때문에 좁아지는 것은 뒤의 것뿐이다. 한 쌍으로 묶었다가
+겪은 일이 이렇다 — 빨간 90의 손잡이가 한계 55~100에서는 235px에 있다가 노란을
+올려 한계가 90~100으로 좁아지자 7px로 튀었다. 값은 그대로인데 화면에서는
+"건드리지도 않은 바가 멋대로 움직인다"로 보인다.
 """
 
 import tkinter as tk
@@ -78,7 +84,10 @@ class Slider:
         scale: float,
         font: tuple,
     ) -> None:
+        # lo·hi는 **트랙이 나타내는 구간**이고 바뀌지 않는다. 고를 수 있는 범위는
+        # _min·_max로 따로 두고 set_limits가 좁힌다 (머리말).
         self._lo, self._hi, self._step = lo, hi, step
+        self._min, self._max = lo, hi
         self._value = clamp(snap(value, step), lo, hi)
         self._color = color
         self._on_change = on_change
@@ -115,19 +124,42 @@ class Slider:
         return self._value
 
     def set_value(self, value: int) -> None:
-        self._value = clamp(snap(value, self._step), self._lo, self._hi)
+        self._value = clamp(snap(value, self._step), self._min, self._max)
         self._draw()
 
-    def set_bounds(self, lo: int, hi: int) -> None:
-        """노란은 빨간보다 5%p 아래에서 멈추고 반대도 같다. **서로 밀어내지 않고
-        그 자리에 선다** — 그러려면 상대가 움직일 때마다 내 한계가 바뀐다."""
-        self._lo, self._hi = lo, hi
+    def set_limits(self, lo: int, hi: int) -> None:
+        """고를 수 있는 값의 범위를 좁힌다. **트랙은 안 건드린다.**
+
+        노란은 빨간보다 5%p 아래에서 멈추고 반대도 같다. 서로 밀어내지 않고 그
+        자리에 서려면, 상대가 움직일 때 바뀌는 것이 **내가 갈 수 있는 데까지**여야
+        하고 내가 그려지는 자리여서는 안 된다 (머리말).
+
+        지금 값이 새 범위 밖이면 안으로 당긴다 — 손으로 고친 파일에서 올 수 있다.
+        """
+        self._min, self._max = lo, hi
         self.set_value(self._value)
+
+    def handle_x(self) -> int:
+        """손잡이 중심의 x. 테스트가 "값은 그대로인데 손잡이가 튀었다"를 재는 자리다."""
+        return value_to_x(self._value, self._lo, self._hi, self._x0, self._x1)
+
+    def drag_to_value(self, value: int) -> None:
+        """그 값 자리를 끈 것과 같게 만든다. 한계에 걸리면 거기서 선다."""
+        self._pick(value_to_x(value, self._lo, self._hi, self._x0, self._x1))
 
     # --- 내부 ------------------------------------------------------------
 
     def _on_mouse(self, event) -> None:
-        value = x_to_value(event.x, self._lo, self._hi, self._x0, self._x1, self._step)
+        self._pick(event.x)
+
+    def _pick(self, x: int) -> None:
+        """트랙 좌표 → 값. **트랙 구간으로 환산하고 한계로 자른다.**
+
+        환산까지 한계로 하면 좁아진 범위가 트랙 전체에 다시 펼쳐져, 같은 자리를
+        눌러도 상대 값에 따라 다른 값이 나온다.
+        """
+        raw = x_to_value(x, self._lo, self._hi, self._x0, self._x1, self._step)
+        value = clamp(raw, self._min, self._max)
         if value == self._value:
             return
         self._value = value
@@ -152,7 +184,7 @@ class Slider:
     def _draw(self) -> None:
         c = self._canvas
         c.delete("all")
-        cx = value_to_x(self._value, self._lo, self._hi, self._x0, self._x1)
+        cx = self.handle_x()
         mid = self._h // 2
 
         c.create_image(0, mid - self._track_h // 2, image=self._track(cx), anchor="nw")

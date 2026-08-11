@@ -301,20 +301,23 @@ class SettingsWindow:
         # 슬라이더도 같은 이유로 _apply_slider_bounds가 값을 되받는다.
         self._draft.poll_seconds = poll.value()
 
+        # **두 슬라이더의 트랙은 같은 구간(PCT_MIN~PCT_MAX)이다.** 서로를 넘지
+        # 못하게 하는 것은 아래 _apply_slider_limits가 거는 한계뿐이다. 트랙까지
+        # 좁히면 상대가 움직일 때 내 손잡이가 제자리에서 튄다 (slider 머리말).
         self._label("노란색으로 바뀌는 사용률", self._font, theme.TEXT_LIGHT)
         self._warn = Slider(
-            self._body, width, *warn_bounds(), PCT_STEP, self._draft.warn_pct,
+            self._body, width, PCT_MIN, PCT_MAX, PCT_STEP, self._draft.warn_pct,
             theme.YELLOW, self._set_warn, s, self._font,
         )
         self._warn.widget().pack(fill="x", pady=(0, round(ROW_GAP * s)))
 
         self._label("빨간색으로 바뀌는 사용률", self._font, theme.TEXT_LIGHT)
         self._danger = Slider(
-            self._body, width, *danger_bounds(), PCT_STEP, self._draft.danger_pct,
+            self._body, width, PCT_MIN, PCT_MAX, PCT_STEP, self._draft.danger_pct,
             theme.RED, self._set_danger, s, self._font,
         )
         self._danger.widget().pack(fill="x")
-        self._apply_slider_bounds()
+        self._apply_slider_limits()
 
         self._separator()
 
@@ -333,19 +336,22 @@ class SettingsWindow:
 
     def _set_warn(self, value: int) -> None:
         self._draft.warn_pct = value
-        self._apply_slider_bounds()
+        self._apply_slider_limits()
 
     def _set_danger(self, value: int) -> None:
         self._draft.danger_pct = value
-        self._apply_slider_bounds()
+        self._apply_slider_limits()
 
-    def _apply_slider_bounds(self) -> None:
-        """서로를 넘지 않게 상대의 한계를 갱신한다. **밀어내지 않는다** —
-        밀어내면 한쪽을 끌 때 다른 쪽이 따라와 값이 둘 다 바뀐다."""
+    def _apply_slider_limits(self) -> None:
+        """서로를 넘지 않게 상대가 갈 수 있는 데까지를 갱신한다.
+
+        **밀어내지 않는다** — 밀어내면 한쪽을 끌 때 다른 쪽이 따라와 값이 둘 다
+        바뀐다. 손잡이가 그려지는 자리도 안 건드린다 (Slider.set_limits).
+        """
         warn_lo, warn_hi = warn_bounds()
         danger_lo, danger_hi = danger_bounds()
-        self._warn.set_bounds(warn_lo, min(warn_hi, self._draft.danger_pct - PCT_STEP))
-        self._danger.set_bounds(max(danger_lo, self._draft.warn_pct + PCT_STEP), danger_hi)
+        self._warn.set_limits(warn_lo, min(warn_hi, self._draft.danger_pct - PCT_STEP))
+        self._danger.set_limits(max(danger_lo, self._draft.warn_pct + PCT_STEP), danger_hi)
         self._draft.warn_pct = self._warn.value()
         self._draft.danger_pct = self._danger.value()
 
