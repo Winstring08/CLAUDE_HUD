@@ -12,6 +12,11 @@ from pathlib import Path
 SM_CXSMICON = 49
 SPI_GETWORKAREA = 0x0030
 
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+
 DEFAULT_ICON_SIZE = 16
 
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
@@ -64,6 +69,34 @@ def round_window_corners(hwnd: int) -> bool:
             ctypes.sizeof(value),
         )
         return rc == 0
+    except (AttributeError, OSError, ValueError, TypeError):
+        return False
+
+
+def keep_on_top(hwnd: int) -> bool:
+    """창을 항상 위 무리의 **맨 위로** 다시 올린다. 성공하면 True.
+
+    `attributes("-topmost", True)`만으로는 모자란다. 그 속성은 우리 조작으로는
+    풀리지 않지만(실측: 숨김·다시 보임·크기 변경·설정창 열고 닫기 모두 유지),
+    **나중에 만들어진 다른 항상 위 창이 우리 위에 얹힌다.** 항상 위끼리는 나중에
+    올라온 쪽이 이기기 때문이다. 그래서 "어느새 뒤로 가 있다"가 된다.
+
+    Tk에 같은 값을 다시 넣는 것으로는 안 된다 — 값이 안 바뀌면 아무것도 하지
+    않는다. 그래서 SetWindowPos를 직접 부른다.
+
+    **SWP_NOACTIVATE가 핵심이다.** 이게 없으면 1초마다 포커스를 빼앗아 다른
+    창에서 타자를 칠 수 없게 된다. 위치와 크기도 건드리지 않으므로(NOMOVE·NOSIZE)
+    드래그 중에 불려도 창이 튀지 않는다.
+    """
+    try:
+        return bool(
+            ctypes.windll.user32.SetWindowPos(
+                wintypes.HWND(hwnd),
+                wintypes.HWND(HWND_TOPMOST),
+                0, 0, 0, 0,
+                ctypes.c_uint(SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
+            )
+        )
     except (AttributeError, OSError, ValueError, TypeError):
         return False
 

@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from PIL import ImageTk
 
-from . import font_install, settings_window, text_center, theme
+from . import font_install, menu_popup, settings_window, text_center, theme
 from .icon_render import LOADING_TEXT as RING_LOADING
 from .ring_render import render_ring
 from .config import Config, save_config
@@ -31,7 +31,7 @@ from .formatting import (
     format_ring_time,
 )
 from .models import HudState, Status
-from .winmetrics import dpi_scale, round_window_corners, work_area
+from .winmetrics import dpi_scale, keep_on_top, round_window_corners, work_area
 
 # 폭 190은 눈대중이 아니라 역산이다. 화면에 나갈 수 있는 모든 문구를 재서
 # 가장 긴 것이 카운트다운 "10시간 14분 후 리셋"이고, **Pretendard가 없는 PC의
@@ -335,13 +335,20 @@ class Overlay:
         self._buttons = button_rects(self._detail.w, self._scale)
         self._hover = False
         self._pressed: str | None = None
-        for widget in (self._win, self._canvas):
-            widget.bind("<Button-1>", self._on_press)
-            widget.bind("<B1-Motion>", self._on_drag)
-            widget.bind("<ButtonRelease-1>", self._on_release)
-            widget.bind("<Button-3>", self._on_menu)
-            widget.bind("<Enter>", self._on_enter)
-            widget.bind("<Leave>", self._on_leave)
+        # **캔버스에만 건다.** 창과 캔버스 양쪽에 걸면 캔버스에서 난 이벤트가
+        # 창의 바인딩으로 **전파되어 핸들러가 두 번** 돈다 (Tk bindtags에 부모
+        # toplevel이 들어 있다). 드래그처럼 같은 값을 두 번 쓰는 처리는 멀쩡해
+        # 보이지만, 좌클릭 전환은 두 번 뒤집혀 제자리로 돌아오고 우클릭은 메뉴가
+        # 두 개 뜬다. 캔버스가 창을 꽉 채우므로 한 곳이면 충분하다.
+        for event, handler in (
+            ("<Button-1>", self._on_press),
+            ("<B1-Motion>", self._on_drag),
+            ("<ButtonRelease-1>", self._on_release),
+            ("<Button-3>", self._on_menu),
+            ("<Enter>", self._on_enter),
+            ("<Leave>", self._on_leave),
+        ):
+            self._canvas.bind(event, handler)
 
         # 링 그림 캐시. PhotoImage는 참조가 끊기면 화면에서 사라진다.
         self._ring_key: tuple | None = None
@@ -429,6 +436,9 @@ class Overlay:
         )
 
     def _on_menu(self, event) -> None:
+        self._show_menu(event.x_root, event.y_root)
+
+    def _show_menu(self, x_root: int, y_root: int) -> None:
         """우클릭 메뉴. 양쪽 모드가 같다.
 
         가운데 항목은 **문구가 바뀌는 토글**이라 자세히 모드에서는 `기본 보기`가
@@ -436,21 +446,22 @@ class Overlay:
         쓰지 않는다 — 체크가 붙으면 "이 항목을 켠다"로 읽혀서, 지금 무엇을 보고
         있는지와 무엇으로 바뀌는지가 헷갈린다.
         """
-        menu = tk.Menu(self._win, tearoff=0, bg=theme.BG, fg=theme.TEXT_LIGHT,
-                       activebackground=theme.RING_TRACK,
-                       activeforeground=theme.TEXT_LIGHT, borderwidth=0)
-        menu.add_command(label="설정…", command=self.open_settings)
-        menu.add_command(
-            label="기본 보기" if self._detailed else "자세히 보기",
-            command=lambda: self.set_detailed(not self._detailed),
+        menu_popup.show(
+            self._win,
+            [
+                ("설정…", self.open_settings),
+                (
+                    "기본 보기" if self._detailed else "자세히 보기",
+                    lambda: self.set_detailed(not self._detailed),
+                ),
+                None,
+                ("오버레이 숨기기", self.hide),
+            ],
+            x_root,
+            y_root,
+            self._scale,
+            self._family,
         )
-        menu.add_separator()
-        menu.add_command(label="오버레이 숨기기", command=self.hide)
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            # grab_release가 없으면 메뉴를 Esc로 닫은 뒤 마우스가 잠긴다.
-            menu.grab_release()
 
     def apply_config(self) -> None:
         """설정창이 닫힌 뒤 표시 여부와 모드를 Config에 맞춘다."""
@@ -570,7 +581,29 @@ class Overlay:
 
     def _tick(self) -> None:
         self._redraw()
+        self._keep_on_top()
         self._win.after(1000, self._tick)
+
+    def _keep_on_top(self) -> None:
+        """항상 위를 매 틱 다시 주장한다.
+
+        `-topmost` 속성만으로는 모자란다 — 나중에 만들어진 다른 항상 위 창이
+        우리 위에 얹히기 때문이다 (winmetrics.keep_on_top의 주석에 실측이 있다).
+
+        숨어 있을 때는 부르지 않는다. 없는 창의 z-순서를 만질 이유가 없고,
+        withdraw된 창에 SetWindowPos를 걸면 잠깐 나타나 보일 수 있다.
+
+        **우클릭 메뉴가 떠 있을 때도 쉰다.** 안 그러면 1초 안에 우리가 자기
+        메뉴 위로 올라가 메뉴를 덮는다 — 메뉴는 방금 누른 자리에 뜨므로 반드시
+        겹친다. 메뉴는 잠깐 떠 있다 닫히므로 그동안 못 올라가도 문제가 없다.
+        """
+        if not self._visible or menu_popup.is_open():
+            return
+        try:
+            hwnd = int(self._win.wm_frame(), 16)
+        except (tk.TclError, ValueError):
+            return
+        keep_on_top(hwnd)
 
     def _redraw(self) -> None:
         self._canvas.delete("all")

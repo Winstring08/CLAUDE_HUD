@@ -70,6 +70,52 @@ def test_dark_title_bar_succeeds_on_this_windows(root):
         win.destroy()
 
 
+def test_keep_on_top_succeeds_on_a_real_window(root):
+    """오버레이가 1초마다 부르는 함수다. 실제로 성공하는지 본다."""
+    import tkinter as tk
+
+    from claude_usage_overlay.winmetrics import keep_on_top
+
+    win = tk.Toplevel(root)
+    try:
+        win.update_idletasks()
+        assert keep_on_top(int(win.wm_frame(), 16)) is True
+    finally:
+        win.destroy()
+
+
+def test_keep_on_top_does_not_steal_focus(root):
+    """SWP_NOACTIVATE가 빠지면 1초마다 포커스를 빼앗아 다른 창에서 타자를
+    칠 수 없게 된다. 부르기 전후로 포커스 주인이 그대로여야 한다."""
+    import ctypes
+    import tkinter as tk
+
+    from claude_usage_overlay.winmetrics import keep_on_top
+
+    other = tk.Toplevel(root)
+    target = tk.Toplevel(root)
+    try:
+        for win in (other, target):
+            win.update_idletasks()
+        other.focus_force()
+        other.update()
+        before = ctypes.windll.user32.GetForegroundWindow()
+        keep_on_top(int(target.wm_frame(), 16))
+        target.update()
+        assert ctypes.windll.user32.GetForegroundWindow() == before
+    finally:
+        target.destroy()
+        other.destroy()
+
+
+def test_keep_on_top_is_quiet_on_a_bogus_handle():
+    """오버레이 _tick 안에서 돈다. 여기서 던지면 화면 갱신이 통째로 멈춘다."""
+    from claude_usage_overlay.winmetrics import keep_on_top
+
+    for bogus in (0, -1, 12345):
+        assert keep_on_top(bogus) in (True, False)
+
+
 def test_dark_title_bar_is_quiet_on_a_bogus_handle():
     """실패해도 예외를 던지지 않는다. 여기서 던지면 설정창이 아예 안 열린다."""
     from claude_usage_overlay.winmetrics import dark_title_bar
