@@ -16,6 +16,7 @@ DEFAULT_ICON_SIZE = 16
 
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2   # 큰 반경. 3(ROUNDSMALL)은 눈에 띄지 않을 만큼 작다
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 
 
 def enable_dpi_awareness() -> None:
@@ -59,6 +60,31 @@ def round_window_corners(hwnd: int) -> bool:
         rc = ctypes.windll.dwmapi.DwmSetWindowAttribute(
             wintypes.HWND(hwnd),
             ctypes.c_uint(DWMWA_WINDOW_CORNER_PREFERENCE),
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+        )
+        return rc == 0
+    except (AttributeError, OSError, ValueError, TypeError):
+        return False
+
+
+def dark_title_bar(hwnd: int) -> bool:
+    """네이티브 창의 제목 표시줄만 어둡게 만든다. 성공하면 True.
+
+    **무테두리로 직접 그릴 필요가 없다.** 이 속성 하나로 제목 표시줄이 어두워지고
+    창 이동·Alt+Tab·스냅·작업 표시줄은 전부 정상으로 남는다 (실측: rc=0, 대조군
+    창과 나란히 띄워 육안 확인).
+
+    round_window_corners와 같은 API다. 함수가 하나 늘 뿐이다.
+
+    Windows 10 초기 판올림에는 이 속성이 없어 실패한다. 그때는 제목 표시줄만
+    밝은 채로 뜬다 — 보기 나쁠 뿐 동작에는 지장이 없으므로 조용히 넘어간다.
+    """
+    try:
+        value = ctypes.c_int(1)
+        rc = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd),
+            ctypes.c_uint(DWMWA_USE_IMMERSIVE_DARK_MODE),
             ctypes.byref(value),
             ctypes.sizeof(value),
         )

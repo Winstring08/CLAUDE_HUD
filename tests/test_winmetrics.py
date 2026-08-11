@@ -49,6 +49,30 @@ def test_work_area_excludes_the_taskbar():
     assert bottom - top <= screen_h
 
 
+def test_dark_title_bar_succeeds_on_this_windows():
+    """DwmSetWindowAttribute(hwnd, 20, TRUE)가 rc=0을 돌려주는지 실제로 본다.
+    Windows 10 초기 판올림에는 이 속성이 없어 실패하는데, 그때는 제목 표시줄만
+    밝게 뜰 뿐이라 조용히 넘어간다 (스펙 11장)."""
+    import tkinter as tk
+
+    from claude_usage_overlay.winmetrics import dark_title_bar
+
+    root = tk.Tk()
+    try:
+        root.update_idletasks()
+        hwnd = int(root.wm_frame(), 16)
+        assert dark_title_bar(hwnd) is True
+    finally:
+        root.destroy()
+
+
+def test_dark_title_bar_is_quiet_on_a_bogus_handle():
+    """실패해도 예외를 던지지 않는다. 여기서 던지면 설정창이 아예 안 열린다."""
+    from claude_usage_overlay.winmetrics import dark_title_bar
+
+    assert dark_title_bar(0) is False
+
+
 def test_round_window_corners_never_raises():
     """Overlay.__init__에서 불린다. 여기서 죽으면 HUD가 아예 안 뜬다.
 
