@@ -12,6 +12,12 @@ from pathlib import Path
 # 시간당 30회가 안전하다는 보장은 없다. 기본값 300초로 장시간 돌려본 뒤 조정한다(스펙 12장).
 MIN_POLL_SECONDS = 120
 
+# 사용률 임계값의 단위. 설정창 슬라이더가 이 값으로 스냅하고, 노란·빨간이
+# 서로에게서 이만큼 떨어져 선다. **두 용도가 같은 상수여야 한다** — 갈라두면
+# 한쪽만 고쳐졌을 때 손잡이가 자기 한계에 정확히 서지 못한다.
+PCT_STEP = 5
+PCT_MIN, PCT_MAX = 50, 100
+
 
 @dataclass
 class Config:
@@ -22,6 +28,9 @@ class Config:
     warn_pct: int = 70
     danger_pct: int = 90
     overlay_visible: bool = True
+    # 기본값 false가 기본 모드(66×66)와 일치한다. 파일을 열어본 사람이
+    # true를 기본으로 보면 지금 보이는 창과 어긋나 헷갈린다.
+    overlay_detailed: bool = False
 
 
 # 필드별 타입 표. Config에 필드를 추가하면 여기도 추가해야 한다 —
@@ -31,12 +40,8 @@ _TYPES = {
     "warn_pct": int,
     "danger_pct": int,
     "overlay_visible": bool,
+    "overlay_detailed": bool,
 }
-
-
-# 프로그램이 바꾸는 값은 이것뿐이다. 나머지(poll_seconds·warn_pct·danger_pct)는
-# 사용자가 메모장으로 고치는 값이라 저장할 때 건드리지 않는다.
-UI_OWNED = ("overlay_visible",)
 
 
 def config_path() -> Path:
@@ -47,7 +52,7 @@ def config_path() -> Path:
 def _coerce(raw: dict) -> dict:
     """읽을 수 없는 값은 조용히 버린다. 그 자리는 기본값이 채운다.
 
-    이 파일은 트레이 메뉴 "설정 파일 열기"로 사용자가 메모장에서 직접 고친다.
+    옛 버전이 남긴 파일이나 손으로 고친 파일이 들어올 수 있다.
     `{"poll_seconds": null}` 같은 오타 하나에 예외를 던지면 HUD가 아예 안 뜨고,
     pythonw에는 콘솔이 없어서 사용자는 원인을 볼 방법조차 없다.
     """
@@ -79,31 +84,30 @@ def load_config(path: Path | None = None) -> Config:
 
     cfg = Config(**_coerce(raw))
     cfg.poll_seconds = max(MIN_POLL_SECONDS, cfg.poll_seconds)
+    # warn ≥ danger면 노란색이 영영 안 나온다. 설정창에서만 보정하면 창을 한 번도
+    # 안 연 사람은 그대로 남으므로, poll_seconds의 하한을 거는 것과 같은 자리에서
+    # 바로잡는다 (스펙 4.1절).
+    #
+    # **danger를 기준으로 두고 warn을 내린다.** 둘 중 결과가 무거운 쪽이 danger라
+    # 그쪽을 사용자 뜻으로 존중한다. 음수까지 내려가지는 않게 0에서 멈춘다.
+    if cfg.warn_pct >= cfg.danger_pct:
+        cfg.warn_pct = max(0, cfg.danger_pct - PCT_STEP)
     return cfg
 
 
 def save_config(cfg: Config, path: Path | None = None) -> None:
-    """디스크의 현재 내용 위에 UI가 소유한 값만 덮어쓴다.
+    """전체를 쓴다.
 
-    전체를 통째로 쓰면 안 된다. config는 기동 시 한 번만 읽으므로 우리가 들고
-    있는 poll_seconds·warn_pct·danger_pct는 기동 시점에서 멈춰 있다. 사용자가
-    "설정 파일 열기"로 그 값을 고친 뒤 오버레이를 한 번 드래그하기만 해도
-    옛 값이 편집 위에 덮여 조용히 사라진다.
+    예전에는 디스크 내용 위에 UI가 소유한 값만 덮었다. 근거는 "나머지는 사용자가
+    메모장으로 고치는 값"이었는데, 이제 전부 설정창이 소유하므로 그 근거가
+    사라졌다. 남는 위험은 프로그램이 켜진 채 파일을 손으로 고치는 경우뿐이고,
+    이제 그럴 이유가 없다 — 트레이의 "설정 파일 열기"도 함께 사라졌다.
 
-    파일이 아직 없으면(트레이 메뉴가 처음 만드는 경우) 전체를 쓴다.
-    사용자가 고칠 키가 다 보여야 하기 때문이다.
+    임시 파일에 쓰고 바꿔치운다. 반쯤 쓰인 파일이 남으면 다음 기동에서
+    전부 기본값으로 떨어진다.
     """
     path = path or config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            raw = {}
-    except (OSError, json.JSONDecodeError):
-        raw = {}
-
-    data = {**raw, **{k: getattr(cfg, k) for k in UI_OWNED}} if raw else asdict(cfg)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
     os.replace(tmp, path)
