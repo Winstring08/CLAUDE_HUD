@@ -3,6 +3,11 @@
 1초마다 다시 그리지만 네트워크는 부르지 않는다. 카운트다운은
 resets_at에서 로컬로 계산한다. 화면은 매초 살아 움직이고 API는 5분에 한 번만.
 
+**모드가 둘이다.**
+
+    기본     66 × 66. 링 하나에 숫자 하나. 평소에 덜 거슬리게
+    자세히   190 × 62. 링 + 카운트다운 + 갱신 문구 두 줄 (예전 모습 그대로)
+
 모든 픽셀 치수는 기준값 × DPI 배율이다. 배율 150% PC에서도 같은 크기로 보인다.
 글꼴만 규칙이 다르다 — fonts_for()의 주석을 보라.
 """
@@ -13,7 +18,8 @@ from datetime import datetime, timezone
 
 from PIL import ImageTk
 
-from . import theme
+from . import font_install, text_center, theme
+from .icon_render import LOADING_TEXT as RING_LOADING
 from .ring_render import render_ring
 from .config import Config, save_config
 from .formatting import (
@@ -49,17 +55,31 @@ BASE_RIGHT_MARGIN = 10
 MARGIN = 24
 ALPHA = 0.82
 
+# 기본 모드 — 정사각형. 링 하나에 숫자 하나.
+#
+# 바깥 지름 50px에 여백 8px, 두께 5px이므로 안쪽 지름이 40px이다. 자세히 모드의
+# 링(안쪽 32px)보다 크므로 시작 글꼴도 그만큼 크다.
+SMALL_SIZE = 66
+SMALL_RING_BOX = (8, 8, 58, 58)
+SMALL_RING_WIDTH = 5
+
 # 글꼴 크기는 픽셀이다. 음수로 넘긴다 (Tk 규약: 음수 = 픽셀, 양수 = 포인트).
 #
-# 링 안에는 숫자만 넣고 % 기호를 뺐다.
-#
-# 들어가는 최대 크기를 쓰지 않는다. 꽉 채우면 숫자가 링 선에 닿아 답답해 보인다 —
-# 오버레이는 트레이 아이콘과 달리 창이 커서 몇 px 양보해도 충분히 읽힌다.
-# 16px이면 두 자리 폭이 20px이라 링 안쪽 32px 안에서 좌우로 6px씩 숨 쉰다.
+# **문구마다 시작 크기를 따로 고른다.** 같은 크기로 `100`과 `5:20`을 둘 다 담으려면
+# 15px인데(실측), 그러면 평소 보는 숫자가 작아진다.
+SMALL_FONT_PCT_PX = 18
+SMALL_FONT_TIME_PX = 15
+
+# 자세히 모드의 링은 안쪽이 32px뿐이다. 꽉 채우면 숫자가 링 선에 닿아 답답해 보인다.
 BASE_FONT_PCT_PX = 16
 PCT_INNER_MARGIN = 4   # 링 선과 글자 사이에 남기는 여백
 BASE_FONT_LINE1_PX = 12
 BASE_FONT_LINE2_PX = 11
+
+MIN_RING_FONT_PX = 8   # 이 아래로는 줄이지 않는다. 넘치는 편이 낫다
+
+# 갱신 지연 임계에 더하는 여유. 분 반올림 경계에서 깜빡이지 않게 한다.
+GAP_PADDING_SECONDS = 60
 
 # 앞에서부터 **설치돼 있는 것**을 쓴다. Segoe UI는 한글 글리프가 없어
 # 한글만 Tk가 고른 다른 글꼴로 그려지므로, 한글까지 한 글꼴로 덮는
@@ -73,6 +93,90 @@ FALLBACK_FAMILY = "Segoe UI"
 
 # 값이 낡은 상태. 아이콘과 같은 기준을 쓴다.
 DIM_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
+
+
+def is_refresh_gap(fetched_at: datetime, now: datetime, poll_seconds: int) -> bool:
+    """갱신이 한 주기를 통째로 건너뛰었는지.
+
+    참이면 링 채움과 숫자를 지우고 흐린 `!` 하나만 그린다. 낡은 숫자는 없느니만
+    못하고, 숫자를 못 믿으면 링도 못 믿는다.
+
+    **한 번의 실패로 지우면 안 된다.** poller._handle_unauthorized()의 401 경합은
+    백오프 없이 다음 틱에 저절로 낫는데, poll_seconds + 60을 기준으로 삼으면 그
+    회복을 기다리는 동안(기본 5분 주기에서 4분) 내내 숫자가 사라진다. 두 번
+    연속 실패해야, 즉 한 주기를 통째로 건너뛰어야 지운다. 세 번이면 그건 경합이
+    아니라 인증 문제라 poller가 Status.RELOGIN으로 넘겨 또렷한 `!`가 된다.
+    """
+    return (now - fetched_at).total_seconds() > poll_seconds * 2 + GAP_PADDING_SECONDS
+
+
+def ring_symbol(state: HudState, now: datetime, poll_seconds: int) -> tuple[str, str] | None:
+    """링 안에 숫자 대신 기호를 그려야 하면 (기호, 색), 아니면 None.
+
+    어휘는 icon_render의 것을 그대로 쓴다. `!`가 두 뜻을 갖지만 밝기로 갈린다 —
+    **기다리면 낫는 것은 흐리게, 사용자가 조치해야 하는 것은 또렷하게.**
+    """
+    if state.status is Status.RELOGIN:
+        return "!", theme.RED
+    if state.status is Status.SCHEMA_ERROR:
+        return "?", theme.TEXT_LIGHT
+    if state.snapshot is None:
+        # 첫 조회 전이거나 한 번도 성공하지 못했다. 여기서 `?`를 쓰면 프로그램을
+        # 켤 때마다 몇 초 동안 "데이터 형식이 바뀜" 기호가 뜬다.
+        return RING_LOADING, theme.TEXT_DIM
+    if state.status in DIM_STATUSES and is_refresh_gap(
+        state.snapshot.fetched_at, now, poll_seconds
+    ):
+        return "!", theme.TEXT_DIM_RING
+    return None
+
+
+def ring_inner_box(
+    ring_box: tuple[int, int, int, int], ring_width: int, scale: float
+) -> tuple[int, int, int, int]:
+    """링 안쪽 원이 차지하는 상자. 글자를 중앙에 놓는 기준이다."""
+    x0, y0, x1, y1 = (round(v * scale) for v in ring_box)
+    rw = max(3, round(ring_width * scale))
+    return (x0 + rw, y0 + rw, x1 - rw, y1 - rw)
+
+
+def ring_text_limit(
+    ring_box: tuple[int, int, int, int], ring_width: int, scale: float
+) -> int:
+    """링 안에 글자가 들어가야 하는 폭.
+
+    계산을 함수로 빼는 이유는 테스트가 코드와 **같은 산수**를 써야 하기 때문이다 —
+    round(32 × 배율)로 어림하면 125%에서 1px 어긋나 통과해야 할 것이 떨어지거나
+    반대가 된다.
+    """
+    x0, _y0, x1, _y1 = ring_inner_box(ring_box, ring_width, scale)
+    return (x1 - x0) - 2 * round(PCT_INNER_MARGIN * scale)
+
+
+def resized_position(
+    x: int,
+    y: int,
+    old_size: tuple[int, int],
+    new_size: tuple[int, int],
+    area: tuple[int, int, int, int],
+) -> tuple[int, int]:
+    """창 크기가 바뀔 때의 새 좌표. **오른쪽 아래 모서리를 고정한다.**
+
+    기본 위치가 작업 영역 오른쪽 아래이므로 그래야 제자리에 남는다.
+
+    **옮겨둔 자리에서는 작업 영역 안으로 되민다.** 창은 드래그로 어디든 갈 수
+    있고, 왼쪽 끝에 붙여둔 상태에서 자세히로 바꾸면 오른쪽 아래를 고정한 채
+    왼쪽으로 124px 자라 화면 밖으로 나간다.
+
+    예전에 16d1eba가 폭 변경에 대해 같은 보정을 넣은 적이 있으나, 위치 저장
+    기능을 통째로 되돌린 62a2fa4가 함께 지웠다. 새로 만드는 부분이다.
+    """
+    old_w, old_h = old_size
+    new_w, new_h = new_size
+    left, top, right, bottom = area
+    nx = max(left, min(x + old_w - new_w, right - new_w))
+    ny = max(top, min(y + old_h - new_h, bottom - new_h))
+    return nx, ny
 
 
 def pick_font_family(root: tk.Misc, candidates=FONT_CANDIDATES) -> str:
