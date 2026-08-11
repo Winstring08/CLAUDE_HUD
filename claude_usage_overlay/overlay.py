@@ -214,22 +214,44 @@ def fonts_for(scale: float, family: str = FALLBACK_FAMILY) -> dict[str, tuple]:
     }
 
 
+class _Geometry:
+    """한 모드의 치수. 배율을 곱한 실제 픽셀이다.
+
+    두 모드가 링 크기까지 다르므로 치수를 인스턴스 속성으로 흩어 두면 모드를
+    바꿀 때 어느 것을 다시 계산해야 하는지 매번 세게 된다. 묶어서 통째로 갈아끼운다.
+    """
+
+    def __init__(self, scale: float, w: int, h: int, ring_box, ring_width: int) -> None:
+        self.w = round(w * scale)
+        self.h = round(h * scale)
+        self.ring = tuple(round(v * scale) for v in ring_box)
+        self.ring_width = max(3, round(ring_width * scale))
+        self.inner = ring_inner_box(ring_box, ring_width, scale)
+        self.text_limit = ring_text_limit(ring_box, ring_width, scale)
+
+    def size(self) -> tuple[int, int]:
+        return (self.w, self.h)
+
+
 class Overlay:
     def __init__(self, root: tk.Tk, config: Config) -> None:
+        self._root = root
         self._config = config
         self._scale = dpi_scale()
+        self._family = pick_font_family(root)
+        # 잉크 상자를 재려면 패밀리 이름이 아니라 파일이 필요하다 (text_center 머리말).
+        # 못 찾으면 None이고, 그때는 레이아웃 상자 중앙에 놓는다.
+        self._font_path = font_install.font_file_for(self._family, bold=True)
 
         s = self._scale
-        self._w = round(BASE_WIDTH * s)
-        self._h = round(BASE_HEIGHT * s)
-        self._ring = tuple(round(v * s) for v in BASE_RING_BOX)
-        self._ring_width = max(3, round(BASE_RING_WIDTH * s))
+        self._small = _Geometry(s, SMALL_SIZE, SMALL_SIZE, SMALL_RING_BOX, SMALL_RING_WIDTH)
+        self._detail = _Geometry(s, BASE_WIDTH, BASE_HEIGHT, BASE_RING_BOX, BASE_RING_WIDTH)
+        self._detailed = config.overlay_detailed
+
         self._text_x = round(BASE_TEXT_X * s)
         self._line1_y = round(BASE_LINE1_Y * s)
         self._line2_y = round(BASE_LINE2_Y * s)
-        self._family = pick_font_family(root)
         fonts = fonts_for(s, self._family)
-        # 링 안 숫자는 여기서 정하지 않는다. 자릿수를 봐야 하므로 _pct_font()가 맡는다.
         self._font_line1 = fonts["line1"]
         self._font_line2 = fonts["line2"]
 
@@ -239,17 +261,17 @@ class Overlay:
         self._win.attributes("-alpha", ALPHA)     # 반투명
         self._win.configure(bg=theme.BG)
 
+        geo = self._geo()
         x, y = self._initial_position()
-        self._win.geometry(f"{self._w}x{self._h}+{x}+{y}")
+        self._win.geometry(f"{geo.w}x{geo.h}+{x}+{y}")
 
         self._canvas = tk.Canvas(
-            self._win, width=self._w, height=self._h, bg=theme.BG, highlightthickness=0
+            self._win, width=geo.w, height=geo.h, bg=theme.BG, highlightthickness=0
         )
         self._canvas.pack()
         self._round_corners()
 
         # 드래그로 옮길 수 있지만 놓은 자리를 저장하지는 않는다.
-        # 그래서 <ButtonRelease-1>에 걸 일이 없다.
         self._drag = {"x": 0, "y": 0}
         for widget in (self._win, self._canvas):
             widget.bind("<Button-1>", self._on_press)
@@ -259,15 +281,19 @@ class Overlay:
         self._ring_key: tuple | None = None
         self._ring_photo: ImageTk.PhotoImage | None = None
 
-        # 링 안 숫자 글꼴 캐시. 자릿수마다 크기가 다르므로 자릿수를 키로 쓴다.
-        self._ring_inner = (self._ring[2] - self._ring[0]) - 2 * self._ring_width
-        self._pct_fonts: dict[int, tkfont.Font] = {}
+        # 링 안 글꼴과 잉크 상자 캐시. 문구를 그대로 키로 쓴다 — 자릿수로 묶으면
+        # `5:20`처럼 콜론이 섞인 문구가 같은 칸에 들어가 폭이 어긋난다.
+        self._fonts: dict[tuple, tuple[tkfont.Font, int]] = {}
+        self._inks: dict[tuple, text_center.Ink | None] = {}
 
         self._state = HudState(Status.STALE, None, LOADING_TEXT)
         self._visible = config.overlay_visible
         if not self._visible:
             self._win.withdraw()
         self._tick()
+
+    def _geo(self) -> _Geometry:
+        return self._detail if self._detailed else self._small
 
     # --- 공개 인터페이스 -------------------------------------------------
     #
@@ -296,6 +322,57 @@ class Overlay:
         self._config.overlay_visible = visible
         save_config(self._config)
         self._win.after(0, self._win.deiconify if visible else self._win.withdraw)
+
+    def is_detailed(self) -> bool:
+        """Tk에 묻지 않는다. 메뉴 문구를 그릴 때마다 불리는 함수라
+        pystray 스레드에서 Tk를 건드리게 된다."""
+        return self._detailed
+
+    def set_detailed(self, detailed: bool) -> None:
+        """모드를 바꾼다. **전환 상태는 저장한다** — 스펙 9장이 config 필드로 정했다.
+
+        좌클릭으로 바뀌는 사용량↔남은 시간 표시와는 다르다. 그쪽은 저장하지 않는다.
+        """
+        if detailed == self._detailed:
+            return
+        self._detailed = detailed
+        self._config.overlay_detailed = detailed
+        save_config(self._config)
+        self._win.after(0, self._apply_geometry)
+
+    def schedule(self, fn) -> None:
+        """콜백을 메인 스레드로 넘긴다. 트레이(pystray 스레드)가 쓴다.
+
+        tkinter 창 조작은 메인 스레드 몫이다. after()는 콜백을 이벤트 큐에 넣을
+        뿐이고 실행은 mainloop가 한다.
+        """
+        self._win.after(0, fn)
+
+    def apply_config(self) -> None:
+        """설정창이 닫힌 뒤 표시 여부와 모드를 Config에 맞춘다."""
+        self._set_visible(self._config.overlay_visible)
+        self.set_detailed(self._config.overlay_detailed)
+
+    def _apply_geometry(self) -> None:
+        """창과 캔버스 크기를 지금 모드에 맞추고 위치를 보정한다.
+
+        캐시를 비우는 이유는 링 안쪽 폭이 달라져 **줄이는 루프의 결과가 달라지기**
+        때문이다. 안 비우면 자세히 모드에서 고른 16px 글꼴이 기본 모드의 큰 링에
+        그대로 쓰여 작게 보인다.
+        """
+        geo = self._geo()
+        x, y = resized_position(
+            self._win.winfo_x(),
+            self._win.winfo_y(),
+            (self._win.winfo_width(), self._win.winfo_height()),
+            geo.size(),
+            work_area(),
+        )
+        self._win.geometry(f"{geo.w}x{geo.h}+{x}+{y}")
+        self._canvas.configure(width=geo.w, height=geo.h)
+        self._ring_key = None
+        self._fonts.clear()
+        self._redraw()
 
     # --- 모양 ------------------------------------------------------------
 
@@ -329,7 +406,8 @@ class Overlay:
         가리켜 창을 못 찾는 사고도 애초에 생기지 않는다.
         """
         _left, _top, right, bottom = work_area()
-        return right - self._w - MARGIN, bottom - self._h - MARGIN
+        geo = self._geo()
+        return right - geo.w - MARGIN, bottom - geo.h - MARGIN
 
     # --- 드래그 이동 ------------------------------------------------------
 
@@ -349,43 +427,79 @@ class Overlay:
         self._win.after(1000, self._tick)
 
     def _redraw(self) -> None:
-        c = self._canvas
-        c.delete("all")
-        state = self._state
+        self._canvas.delete("all")
         now = datetime.now(timezone.utc)
+        if self._detailed:
+            self._redraw_detailed(self._state, now)
+        else:
+            self._redraw_small(self._state, now)
+
+    # --- 기본 모드 -------------------------------------------------------
+
+    def _redraw_small(self, state: HudState, now: datetime) -> None:
+        """링 안에 숫자 하나. 값이 없거나 못 믿을 때는 기호 하나."""
+        geo = self._small
+        symbol = ring_symbol(state, now, self._config.poll_seconds)
+        if symbol is not None:
+            text, color = symbol
+            # 링 채움을 그리지 않는다. 숫자를 못 믿으면 링도 못 믿는다.
+            self._draw_ring(geo, 0, theme.RING_DIM if text == "!" else theme.GREY)
+            self._draw_ring_text(geo, text, color, SMALL_FONT_PCT_PX)
+            return
+
+        snap = state.snapshot
+        pct = snap.five_hour_pct
+        dim = state.status in DIM_STATUSES
+        color = theme.color_for(pct, self._config.warn_pct, self._config.danger_pct)
+        self._draw_ring(geo, pct, theme.RING_DIM if dim else color)
+        self._draw_ring_text(
+            geo,
+            str(int(round(pct))),
+            theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT,
+            SMALL_FONT_PCT_PX,
+        )
+
+    # --- 자세히 모드 -----------------------------------------------------
+
+    def _redraw_detailed(self, state: HudState, now: datetime) -> None:
+        geo = self._detail
 
         if state.status is Status.RELOGIN:
             # 문구는 credentials가 정한다. "제목 — 할 일" 형태를 두 줄로 나눈다.
             head, _, tail = state.detail.partition(" — ")
-            self._draw_ring(0, theme.GREY)
+            self._draw_ring(geo, 0, theme.GREY)
             self._draw_text(head or "재로그인 필요", theme.RED, tail, theme.TEXT_DIM)
             return
 
         if state.snapshot is None:
             # 첫 조회 전(STALE)과 SCHEMA_ERROR가 모두 여기로 온다. 문구는
-            # 만든 쪽이 정하므로 오버레이는 기호를 고를 필요가 없다 —
-            # 트레이 아이콘만 "…"와 "?"를 구분한다.
-            self._draw_ring(0, theme.GREY)
+            # 만든 쪽이 정하므로 오버레이는 기호를 고를 필요가 없다.
+            self._draw_ring(geo, 0, theme.GREY)
             self._draw_text(state.detail or LOADING_TEXT, theme.TEXT_DIM, "", theme.TEXT_DIM)
             return
 
         snap = state.snapshot
-        pct = snap.five_hour_pct
-        color = theme.color_for(pct, self._config.warn_pct, self._config.danger_pct)
         dim = state.status in DIM_STATUSES
+        gap = dim and is_refresh_gap(snap.fetched_at, now, self._config.poll_seconds)
 
-        self._draw_ring(pct, theme.RING_DIM if dim else color)
-        # 링 안에는 숫자만. % 기호는 링 자체가 이미 비율을 말하고 있어 군더더기다.
-        number = str(int(round(pct)))
-        c.create_text(
-            (self._ring[0] + self._ring[2]) / 2,
-            (self._ring[1] + self._ring[3]) / 2,
-            text=number,
-            fill=theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT,
-            font=self._pct_font(number),
-        )
+        if gap:
+            # 3.1절의 근거("낡은 숫자는 없느니만 못하다")는 창 크기와 무관하다.
+            # 한쪽만 지우면 클릭 한 번으로 못 믿을 숫자가 도로 나타난다.
+            self._draw_ring(geo, 0, theme.RING_DIM)
+            self._draw_ring_text(geo, "!", theme.TEXT_DIM_RING, BASE_FONT_PCT_PX)
+        else:
+            pct = snap.five_hour_pct
+            color = theme.color_for(pct, self._config.warn_pct, self._config.danger_pct)
+            self._draw_ring(geo, pct, theme.RING_DIM if dim else color)
+            self._draw_ring_text(
+                geo,
+                str(int(round(pct))),
+                theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT,
+                BASE_FONT_PCT_PX,
+            )
 
-        # resets_at이 None이면 "—"가 온다. 링과 숫자는 그대로 그린다.
+        # 아래 두 줄은 갱신 지연에서도 흐리게 그대로 둔다 — `N분째 갱신 실패`가
+        # 바로 옆에서 상태를 말하고 있으므로 카운트다운까지 지울 이유는 없다.
         line1 = format_countdown(snap.resets_at, now)
         if state.status is Status.STALE:
             line2, line2_color = state.detail, theme.YELLOW
@@ -398,48 +512,66 @@ class Overlay:
             line1, theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT, line2, line2_color
         )
 
-    def _pct_font(self, text: str) -> tkfont.Font:
-        """링 안에 들어가는 가장 큰 글꼴.
+    # --- 링 안 글자 ------------------------------------------------------
 
-        평소에는 두 자리라 큼직하게 들어가고, 100%가 되는 순간에만 한 단계
-        작아진다. 자릿수로 캐시하는 이유는 숫자 글리프 폭이 서로 같아서
-        `62`와 `87`이 같은 크기를 쓰기 때문이다.
+    def _draw_ring_text(self, geo: _Geometry, text: str, color: str, start_px: int) -> None:
+        font, px = self._ring_font(geo, text, start_px)
+        ink = self._ink(px, text)
+        if ink is None:
+            # 글꼴 파일을 못 찾았다. 잉크 정렬을 포기하고 레이아웃 상자 중앙에
+            # 놓는다 — 1px 처져 보일 뿐 화면은 정상이다.
+            self._canvas.create_text(
+                (geo.inner[0] + geo.inner[2]) / 2,
+                (geo.inner[1] + geo.inner[3]) / 2,
+                text=text, fill=color, font=font,
+            )
+            return
+        x, y = text_center.nw_xy(geo.inner, ink, font.metrics("ascent"))
+        self._canvas.create_text(x, y, text=text, anchor="nw", fill=color, font=font)
+
+    def _ring_font(self, geo: _Geometry, text: str, start_px: int):
+        """링 안에 들어가는 가장 큰 글꼴과 그 픽셀 크기.
+
+        **시작 크기를 확정값으로 쓰지 않는다.** 배율 100%에서 여유가 정확히 0px이라
+        반올림이 한 번만 어긋나면 넘친다(실측: 125%의 `5:20`은 42px, 150%의 `100`은
+        49px로 가용폭을 넘는다). create_text는 넘쳐도 경고 없이 자르므로 상수로
+        박아두면 깨진 화면을 아무도 못 본다. 그래서 들어갈 때까지 1px씩 줄인다 —
+        이 루프 하나가 배율뿐 아니라 두 자리 시(`10:14`)까지 함께 흡수한다.
         """
-        digits = len(text)
-        cached = self._pct_fonts.get(digits)
+        key = (text, start_px, geo.text_limit)
+        cached = self._fonts.get(key)
         if cached is not None:
             return cached
 
-        limit = self._ring_inner - round(PCT_INNER_MARGIN * self._scale) * 2
-        px = round(BASE_FONT_PCT_PX * self._scale)
+        px = round(start_px * self._scale)
         font = tkfont.Font(root=self._win, family=self._family, size=-px, weight="bold")
-        while px > 8 and font.measure(text) > limit:
+        while px > MIN_RING_FONT_PX and font.measure(text) > geo.text_limit:
             px -= 1
-            font = tkfont.Font(
-                root=self._win, family=self._family, size=-px, weight="bold"
-            )
+            font = tkfont.Font(root=self._win, family=self._family, size=-px, weight="bold")
 
-        self._pct_fonts[digits] = font
-        return font
+        self._fonts[key] = (font, px)
+        return font, px
 
-    def _draw_ring(self, pct: float, color: str) -> None:
+    def _ink(self, px: int, text: str) -> "text_center.Ink | None":
+        key = (text, px)
+        if key not in self._inks:
+            self._inks[key] = text_center.measure_ink(self._font_path, px, text)
+        return self._inks[key]
+
+    def _draw_ring(self, geo: _Geometry, pct: float, color: str) -> None:
         """링은 캔버스가 아니라 PIL이 그린다.
 
         create_arc에는 안티앨리어싱이 없어 곡선이 픽셀 계단으로 드러난다.
         ring_render는 크게 그려 축소하므로 경계가 매끈하다.
 
-        그림은 (크기, 정수 %, 색)이 바뀔 때만 다시 만든다. _redraw는 1초마다
-        도는데 사용률은 5분에 한 번만 움직이므로 대부분 캐시가 그대로 쓰인다.
-        PhotoImage는 참조를 놓으면 가비지 컬렉션되어 화면에서 사라지므로
-        self에 붙들고 있어야 한다.
+        그림은 (크기, 정수 %, 색)이 바뀔 때만 다시 만든다. 크기가 키에 들어 있어
+        모드를 바꾸면 자동으로 다시 만들어진다.
         """
-        x0, y0, x1, y1 = self._ring
+        x0, y0, x1, y1 = geo.ring
         key = (x1 - x0, int(round(pct)), color)
         if key != self._ring_key:
             self._ring_photo = ImageTk.PhotoImage(
-                render_ring(
-                    x1 - x0, pct, color, bg=theme.BG, width=self._ring_width
-                )
+                render_ring(x1 - x0, pct, color, bg=theme.BG, width=geo.ring_width)
             )
             self._ring_key = key
         self._canvas.create_image(x0, y0, image=self._ring_photo, anchor="nw")
