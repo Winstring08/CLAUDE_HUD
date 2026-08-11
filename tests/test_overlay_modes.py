@@ -150,6 +150,68 @@ def test_the_basic_window_is_a_square_with_an_eight_pixel_margin():
     assert ov.SMALL_RING_BOX == (8, 8, ov.SMALL_SIZE - 8, ov.SMALL_SIZE - 8)
 
 
+# --- 자세히 모드의 ⚙·✕ (스펙 3.3절) ---
+
+
+def test_the_buttons_sit_in_the_top_right_corner():
+    rects = ov.button_rects(ov.BASE_WIDTH, 1.0)
+    assert set(rects) == {"gear", "close"}
+    for x0, y0, x1, y1 in rects.values():
+        assert y0 >= 0 and y1 <= ov.BASE_HEIGHT
+        assert x1 <= ov.BASE_WIDTH
+
+
+def test_the_gear_is_left_of_the_close_button():
+    """✕가 오른쪽 끝이다. 창의 닫기 단추가 늘 그 자리에 있어 손이 먼저 간다."""
+    rects = ov.button_rects(ov.BASE_WIDTH, 1.0)
+    assert rects["gear"][2] <= rects["close"][0]
+
+
+def test_the_buttons_do_not_overlap_the_ring():
+    """링은 왼쪽 x 12~54에 있다. 겹치면 단추가 링 위에 얹힌다."""
+    rects = ov.button_rects(ov.BASE_WIDTH, 1.0)
+    assert min(r[0] for r in rects.values()) > ov.BASE_RING_BOX[2]
+
+
+def test_the_buttons_do_not_overlap_the_first_text_line():
+    """첫 줄은 y 24에 12px 글꼴로 그려져 대략 18~30을 쓴다."""
+    rects = ov.button_rects(ov.BASE_WIDTH, 1.0)
+    assert max(r[3] for r in rects.values()) <= ov.BASE_LINE1_Y - 6
+
+
+def test_the_buttons_are_big_enough_to_hit():
+    """66px 창의 구석에 넣으면 12px도 안 되어 못 누른다. 자리가 있는 쪽에만 둔다."""
+    for x0, y0, x1, y1 in ov.button_rects(ov.BASE_WIDTH, 1.0).values():
+        assert x1 - x0 >= 14 and y1 - y0 >= 14
+
+
+def test_a_press_inside_a_rect_hits_it():
+    rects = ov.button_rects(ov.BASE_WIDTH, 1.0)
+    x0, y0, x1, y1 = rects["close"]
+    assert ov.hit_button((x0 + x1) // 2, (y0 + y1) // 2, rects) == "close"
+
+
+def test_a_press_outside_hits_nothing():
+    rects = ov.button_rects(ov.BASE_WIDTH, 1.0)
+    assert ov.hit_button(5, 40, rects) is None
+    assert ov.hit_button(ov.BASE_WIDTH - 1, ov.BASE_HEIGHT - 1, rects) is None
+
+
+def test_the_rects_grow_with_the_scale():
+    """배율 150% PC에서 14px 단추는 21px이 되어야 손가락 크기가 같아 보인다."""
+    small = ov.button_rects(round(ov.BASE_WIDTH * 1.0), 1.0)["close"]
+    big = ov.button_rects(round(ov.BASE_WIDTH * 1.5), 1.5)["close"]
+    assert (big[2] - big[0]) == round(ov.BTN_SIZE * 1.5)
+    assert (small[2] - small[0]) == ov.BTN_SIZE
+
+
+def test_the_rects_stay_pinned_to_the_right_edge_at_every_scale():
+    for scale in (1.0, 1.25, 1.5):
+        width = round(ov.BASE_WIDTH * scale)
+        rects = ov.button_rects(width, scale)
+        assert rects["close"][2] == width - round(ov.BTN_RIGHT_MARGIN * scale)
+
+
 # --- 드래그와 클릭 (스펙 3.3절) ---
 
 

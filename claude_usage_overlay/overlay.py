@@ -12,13 +12,14 @@ resets_at에서 로컬로 계산한다. 화면은 매초 살아 움직이고 API
 글꼴만 규칙이 다르다 — fonts_for()의 주석을 보라.
 """
 
+import math
 import tkinter as tk
 import tkinter.font as tkfont
 from datetime import datetime, timezone
 
 from PIL import ImageTk
 
-from . import font_install, text_center, theme
+from . import font_install, settings_window, text_center, theme
 from .icon_render import LOADING_TEXT as RING_LOADING
 from .ring_render import render_ring
 from .config import Config, save_config
@@ -88,6 +89,13 @@ GAP_PADDING_SECONDS = 60
 # 사용자만 클릭이 더 잘 먹는 것이 아니라, 정말 옮기려고 3px 끌었을 때 창이
 # 안 따라온다. 마우스가 보내는 픽셀은 배율과 무관하다.
 DRAG_THRESHOLD = 3
+
+# 자세히 모드 우상단의 ⚙·✕. **기본 모드에는 없다** — 66px 창의 구석에 넣으면
+# 12px도 안 되어 못 누른다. 단추는 자리가 있는 쪽에만 둔다.
+BTN_SIZE = 14
+BTN_TOP = 4
+BTN_GAP = 4
+BTN_RIGHT_MARGIN = 4
 
 # 앞에서부터 **설치돼 있는 것**을 쓴다. Segoe UI는 한글 글리프가 없어
 # 한글만 Tk가 고른 다른 글꼴로 그려지므로, 한글까지 한 글꼴로 덮는
@@ -196,6 +204,36 @@ def is_drag(dx: int, dy: int, threshold: int = DRAG_THRESHOLD) -> bool:
     return max(abs(dx), abs(dy)) >= threshold
 
 
+def button_rects(width: int, scale: float) -> dict[str, tuple[int, int, int, int]]:
+    """⚙·✕의 판정 상자. width는 **배율이 곱해진** 창 폭이다.
+
+    ✕를 오른쪽 끝에 둔다. 창의 닫기 단추가 늘 그 자리에 있어 손이 먼저 간다.
+    """
+    size = round(BTN_SIZE * scale)
+    top = round(BTN_TOP * scale)
+    gap = round(BTN_GAP * scale)
+    right = width - round(BTN_RIGHT_MARGIN * scale)
+    close_x0 = right - size
+    gear_x0 = close_x0 - gap - size
+    return {
+        "gear": (gear_x0, top, gear_x0 + size, top + size),
+        "close": (close_x0, top, close_x0 + size, top + size),
+    }
+
+
+def hit_button(x: int, y: int, rects: dict[str, tuple[int, int, int, int]]) -> str | None:
+    """누른 자리가 단추 안인지.
+
+    캔버스 아이템에 tag_bind를 걸지 않는다. 캔버스를 1초마다 통째로 다시 그리므로
+    매번 다시 걸어야 하고, 그러면 창 전체의 <Button-1> 바인딩과 순서를 다투게 된다.
+    좌표로 판정하면 순수 함수라 테스트도 된다.
+    """
+    for name, (x0, y0, x1, y1) in rects.items():
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            return name
+    return None
+
+
 def pick_font_family(root: tk.Misc, candidates=FONT_CANDIDATES) -> str:
     """후보 중 **실제로 설치된** 첫 글꼴 이름. 없으면 FALLBACK_FAMILY.
 
@@ -294,10 +332,16 @@ class Overlay:
         # 링 안에 사용량 대신 남은 시간을 그리는지. **저장하지 않는다** —
         # 창 위치를 저장하지 않는 것과 같은 이유이고, 다시 켜면 사용량으로 돌아온다.
         self._show_time = False
+        self._buttons = button_rects(self._detail.w, self._scale)
+        self._hover = False
+        self._pressed: str | None = None
         for widget in (self._win, self._canvas):
             widget.bind("<Button-1>", self._on_press)
             widget.bind("<B1-Motion>", self._on_drag)
             widget.bind("<ButtonRelease-1>", self._on_release)
+            widget.bind("<Button-3>", self._on_menu)
+            widget.bind("<Enter>", self._on_enter)
+            widget.bind("<Leave>", self._on_leave)
 
         # 링 그림 캐시. PhotoImage는 참조가 끊기면 화면에서 사라진다.
         self._ring_key: tuple | None = None
@@ -344,6 +388,8 @@ class Overlay:
         self._config.overlay_visible = visible
         save_config(self._config)
         self._win.after(0, self._win.deiconify if visible else self._win.withdraw)
+        # 설정창이 떠 있으면 체크박스를 따라 갱신한다 (스펙 4.4절).
+        settings_window.sync_open(self._config)
 
     def is_detailed(self) -> bool:
         """Tk에 묻지 않는다. 메뉴 문구를 그릴 때마다 불리는 함수라
@@ -361,6 +407,8 @@ class Overlay:
         self._config.overlay_detailed = detailed
         save_config(self._config)
         self._win.after(0, self._apply_geometry)
+        # 설정창이 떠 있으면 체크박스를 따라 갱신한다 (스펙 4.4절).
+        settings_window.sync_open(self._config)
 
     def schedule(self, fn) -> None:
         """콜백을 메인 스레드로 넘긴다. 트레이(pystray 스레드)가 쓴다.
@@ -369,6 +417,40 @@ class Overlay:
         뿐이고 실행은 mainloop가 한다.
         """
         self._win.after(0, fn)
+
+    def open_settings(self) -> None:
+        """설정창을 연다. 이 메서드는 **메인 스레드에서만** 부른다.
+
+        트레이 메뉴는 pystray 스레드에서 도므로 schedule(overlay.open_settings)로
+        감싸서 부른다.
+        """
+        settings_window.open_settings(
+            self._root, self._config, on_change=self.apply_config
+        )
+
+    def _on_menu(self, event) -> None:
+        """우클릭 메뉴. 양쪽 모드가 같다.
+
+        가운데 항목은 **문구가 바뀌는 토글**이라 자세히 모드에서는 `기본 보기`가
+        된다. 트레이의 `오버레이 보이기 / 숨기기`와 같은 방식이므로 체크 표시를
+        쓰지 않는다 — 체크가 붙으면 "이 항목을 켠다"로 읽혀서, 지금 무엇을 보고
+        있는지와 무엇으로 바뀌는지가 헷갈린다.
+        """
+        menu = tk.Menu(self._win, tearoff=0, bg=theme.BG, fg=theme.TEXT_LIGHT,
+                       activebackground=theme.RING_TRACK,
+                       activeforeground=theme.TEXT_LIGHT, borderwidth=0)
+        menu.add_command(label="설정…", command=self.open_settings)
+        menu.add_command(
+            label="기본 보기" if self._detailed else "자세히 보기",
+            command=lambda: self.set_detailed(not self._detailed),
+        )
+        menu.add_separator()
+        menu.add_command(label="오버레이 숨기기", command=self.hide)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            # grab_release가 없으면 메뉴를 Esc로 닫은 뒤 마우스가 잠긴다.
+            menu.grab_release()
 
     def apply_config(self) -> None:
         """설정창이 닫힌 뒤 표시 여부와 모드를 Config에 맞춘다."""
@@ -439,6 +521,11 @@ class Overlay:
         self._drag["ox"] = event.x_root
         self._drag["oy"] = event.y_root
         self._drag["moved"] = False
+        self._pressed = (
+            hit_button(event.x, event.y, self._buttons)
+            if self._detailed and self._hover
+            else None
+        )
 
     def _on_drag(self, event) -> None:
         if is_drag(event.x_root - self._drag["ox"], event.y_root - self._drag["oy"]):
@@ -453,12 +540,30 @@ class Overlay:
     def _on_release(self, event) -> None:
         """3px 안에서 뗐으면 클릭이다.
 
-        **자세히 모드에는 좌클릭 전환이 없다.** 아래 줄에 이미 카운트다운이 있어서
-        같은 값을 두 자리에 보이게 될 뿐이다.
+        단추를 누르고 있었으면 단추 동작이 이긴다. 그러지 않으면 ⚙를 눌렀을 때
+        전환까지 함께 일어난다.
         """
-        if self._drag["moved"] or self._detailed:
+        pressed, self._pressed = self._pressed, None
+        if self._drag["moved"]:
+            return
+        if pressed == "gear":
+            self.open_settings()
+            return
+        if pressed == "close":
+            self.hide()
+            return
+        # **자세히 모드에는 좌클릭 전환이 없다.** 아래 줄에 이미 카운트다운이 있다.
+        if self._detailed:
             return
         self._show_time = not self._show_time
+        self._redraw()
+
+    def _on_enter(self, _event) -> None:
+        self._hover = True
+        self._redraw()
+
+    def _on_leave(self, _event) -> None:
+        self._hover = False
         self._redraw()
 
     # --- 그리기 ----------------------------------------------------------
@@ -556,6 +661,9 @@ class Overlay:
             line1, theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT, line2, line2_color
         )
 
+        if self._hover:
+            self._draw_buttons()
+
     # --- 링 안 글자 ------------------------------------------------------
 
     def _draw_ring_text(self, geo: _Geometry, text: str, color: str, start_px: int) -> None:
@@ -629,4 +737,44 @@ class Overlay:
             self._canvas.create_text(
                 self._text_x, self._line2_y, text=line2, anchor="w",
                 fill=color2, font=self._font_line2,
+            )
+
+    def _draw_buttons(self) -> None:
+        """⚙와 ✕를 직접 그린다.
+
+        글리프(`⚙`·`✕`)를 쓰지 않는다. Pretendard에 ⚙(U+2699)가 없어 Tk가 다른
+        글꼴로 대체하는데, 어느 글꼴이 잡히느냐에 따라 크기와 위치가 달라져 단추
+        안에서 뜬다. 없으면 빈 사각형이 그려진다. icon_render._cross_icon이 ✕를
+        선으로 긋는 것과 같은 판단이다.
+        """
+        for name, (x0, y0, x1, y1) in self._buttons.items():
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            r = (x1 - x0) / 2
+            if name == "close":
+                pad = r * 0.45
+                for a, b in (((-1, -1), (1, 1)), ((1, -1), (-1, 1))):
+                    self._canvas.create_line(
+                        cx + a[0] * pad, cy + a[1] * pad,
+                        cx + b[0] * pad, cy + b[1] * pad,
+                        fill=theme.TEXT_DIM, width=max(1, round(1.5 * self._scale)),
+                        capstyle="round",
+                    )
+            else:
+                self._draw_gear(cx, cy, r)
+
+    def _draw_gear(self, cx: float, cy: float, r: float) -> None:
+        """원 하나에 살 여섯. 14px에서 톱니를 그리면 뭉개져 점으로 보인다."""
+        width = max(1, round(1.5 * self._scale))
+        ring = r * 0.42
+        self._canvas.create_oval(
+            cx - ring, cy - ring, cx + ring, cy + ring,
+            outline=theme.TEXT_DIM, width=width,
+        )
+        for index in range(6):
+            angle = math.pi * index / 3
+            dx, dy = math.cos(angle), math.sin(angle)
+            self._canvas.create_line(
+                cx + dx * ring, cy + dy * ring,
+                cx + dx * r * 0.95, cy + dy * r * 0.95,
+                fill=theme.TEXT_DIM, width=width, capstyle="round",
             )
