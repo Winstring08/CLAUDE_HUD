@@ -8,6 +8,7 @@
     pip install pyinstaller
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +64,10 @@ def build() -> int:
         # pystray는 백엔드를 실행 시점에 고르므로 정적 분석에 안 잡힌다.
         "--hidden-import", "pystray._win32",
         "--hidden-import", "PIL._tkinter_finder",
+        # 글꼴은 정적 분석에 안 잡힌다. 우리가 경로로 여는 데이터 파일이다.
+        # 구분자는 os.pathsep — 윈도우에서는 ';'다.
+        "--add-data",
+        f"{ROOT / 'claude_usage_overlay' / 'fonts'}{os.pathsep}claude_usage_overlay/fonts",
         str(ROOT / "app.py"),
     ]
     print(" ".join(cmd))

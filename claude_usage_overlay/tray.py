@@ -2,12 +2,11 @@
 
 import os
 import subprocess
-import threading
 from datetime import datetime, timezone
 
 import pystray
 
-from . import autostart, font_install
+from . import autostart
 from .config import Config, config_path, save_config
 from .formatting import LOADING_TEXT, format_age, format_countdown
 from .icon_render import render_icon
@@ -145,12 +144,6 @@ class Tray:
                 checked=lambda _: autostart.is_enabled(),
             ),
             pystray.MenuItem("설정 파일 열기", self._open_config),
-            # 이미 깔려 있는 사람에게는 보일 이유가 없는 항목이다.
-            pystray.MenuItem(
-                "Pretendard 글꼴 설치",
-                self._install_font,
-                visible=lambda _: not font_install.is_installed(),
-            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("종료", self._quit),
         )
@@ -165,32 +158,6 @@ class Tray:
 
     def _toggle_autostart(self) -> None:
         autostart.disable() if autostart.is_enabled() else autostart.enable()
-
-    def _install_font(self) -> None:
-        """47MB를 받는 일이라 메뉴 콜백을 붙들고 있으면 안 된다.
-
-        pystray 스레드가 여기서 막히면 메뉴가 닫히지 않고 트레이 아이콘도
-        응답하지 않는다. 별도 스레드로 넘기고 결과만 풍선 알림으로 알린다.
-        """
-        threading.Thread(target=self._install_font_now, daemon=True).start()
-
-    def _install_font_now(self) -> None:
-        try:
-            font_install.install()
-        except Exception as err:  # 네트워크 실패·형식 변경 등
-            self._notify(f"글꼴 설치 실패 — {type(err).__name__}")
-            return
-        # 이 프로세스에도 바로 올려 둔다. 그래야 다음 실행에서 곧바로 쓰인다 —
-        # 레지스트리 등록만으로는 다음 로그온까지 기다려야 한다.
-        font_install.activate()
-        self._notify("Pretendard 설치됨 — 다시 실행하면 적용됩니다")
-
-    def _notify(self, message: str) -> None:
-        """풍선 알림. 안 되는 환경이면 조용히 넘어간다."""
-        try:
-            self._icon.notify(message, "Claude 사용량")
-        except Exception:
-            pass
 
     def _open_config(self) -> None:
         path = config_path()
