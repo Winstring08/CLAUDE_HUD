@@ -1,13 +1,12 @@
 """pystray 트레이 아이콘과 메뉴."""
 
 import os
-import subprocess
 from datetime import datetime, timezone
 
 import pystray
 
 from . import autostart
-from .config import Config, config_path, save_config
+from .config import Config
 from .formatting import LOADING_TEXT, format_age, format_countdown
 from .icon_render import render_icon
 from .models import HudState, Status
@@ -131,6 +130,15 @@ class Tray:
         )
 
     def _build_menu(self) -> pystray.Menu:
+        """스펙 9장의 순서 그대로.
+
+        config.json을 메모장으로 여는 옛 항목은 설정창이 대신하므로 뺐다. 자동
+        실행이 트레이와 설정창 양쪽에 있지만 둘 다 레지스트리를 읽어 그리므로
+        어긋나지 않는다.
+
+        (그 항목의 옛 이름을 여기 적지 않는다 — tests/test_tray.py가 이 파일의
+        본문을 통째로 훑어 그 문자열이 없는지 보기 때문이다.)
+        """
         return pystray.Menu(
             pystray.MenuItem(
                 lambda _: "오버레이 숨기기" if self._overlay.is_visible() else "오버레이 보이기",
@@ -138,12 +146,12 @@ class Tray:
             ),
             pystray.MenuItem("지금 갱신", self._refresh_now),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem("설정…", self._open_settings),
             pystray.MenuItem(
                 "시작할 때 자동 실행",
                 self._toggle_autostart,
                 checked=lambda _: autostart.is_enabled(),
             ),
-            pystray.MenuItem("설정 파일 열기", self._open_config),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("종료", self._quit),
         )
@@ -159,12 +167,10 @@ class Tray:
     def _toggle_autostart(self) -> None:
         autostart.disable() if autostart.is_enabled() else autostart.enable()
 
-    def _open_config(self) -> None:
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            save_config(self._config, path)
-        subprocess.Popen(["notepad.exe", str(path)])
+    def _open_settings(self) -> None:
+        """**pystray 스레드에서 불린다.** tkinter 창 조작은 메인 스레드 몫이므로
+        오버레이의 위젯 after()로 넘긴다 — overlay._set_visible과 같은 방식이다."""
+        self._overlay.schedule(self._overlay.open_settings)
 
     def _quit(self) -> None:
         self._poller.stop()

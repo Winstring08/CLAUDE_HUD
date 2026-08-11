@@ -1,6 +1,7 @@
 import ctypes
 from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from claude_usage_overlay.icon_render import render_icon
 from claude_usage_overlay.models import HudState, Status, UsageSnapshot
@@ -116,3 +117,28 @@ def test_tooltip_never_exceeds_the_win32_buffer():
         HudState(Status.STALE, UsageSnapshot(23.0, NOW, 15.0, NOW), long_detail),
     ):
         assert len(_tooltip(state)) <= TOOLTIP_LIMIT
+
+
+def test_the_tooltip_starts_with_the_prefix_tray_promote_looks_for():
+    """tray_promote는 InitialTooltip이 이 접두사로 시작하는 항목을 우리 것으로
+    고른다. 여기 첫 줄을 고치면 아이콘 고정이 아무 표시 없이 죽는다."""
+    from claude_usage_overlay.tray_promote import TOOLTIP_PREFIX
+
+    for s in (
+        state(),
+        state(Status.STALE),
+        HudState(Status.RELOGIN, None, "재로그인 필요 — claude auth login"),
+        HudState(Status.STALE, None, "불러오는 중"),
+    ):
+        assert _tooltip(s).startswith(TOOLTIP_PREFIX), _tooltip(s)
+
+
+def test_the_menu_has_no_config_file_item():
+    """설정창이 대신하므로 "설정 파일 열기"가 사라졌다. 남아 있으면 사용자가
+    파일을 열어 고치고, 설정창이 닫힐 때 전체 쓰기로 그 편집을 덮는다."""
+    import claude_usage_overlay.tray as tray_mod
+
+    source = Path(tray_mod.__file__).read_text(encoding="utf-8")
+    assert "설정 파일 열기" not in source
+    assert "notepad" not in source
+    assert "Pretendard 글꼴 설치" not in source
