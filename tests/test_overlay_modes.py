@@ -150,6 +150,32 @@ def test_the_basic_window_is_a_square_with_an_eight_pixel_margin():
     assert ov.SMALL_RING_BOX == (8, 8, ov.SMALL_SIZE - 8, ov.SMALL_SIZE - 8)
 
 
+# --- 드래그와 클릭 (스펙 3.3절) ---
+
+
+def test_a_small_wobble_is_a_click():
+    """단추를 누르는 동안 손이 1~2px 흔들리는 것은 정상이다."""
+    assert not ov.is_drag(2, 0)
+    assert not ov.is_drag(0, 2)
+    assert not ov.is_drag(-2, 2)
+
+
+def test_moving_past_the_threshold_is_a_drag():
+    assert ov.is_drag(4, 0)
+    assert ov.is_drag(0, -4)
+
+
+def test_the_threshold_itself_counts_as_a_drag():
+    assert ov.is_drag(3, 0)
+
+
+def test_a_diagonal_wobble_is_judged_per_axis():
+    """유클리드 거리로 재면 (3, 3)이 4.24가 되어 같은 3px 이동이 축에 따라
+    갈린다. 축별 최댓값으로 본다."""
+    assert ov.is_drag(3, 3)
+    assert not ov.is_drag(2, 2)
+
+
 @pytest.mark.parametrize("scale", (1.0, 1.25, 1.5))
 def test_the_geometry_helpers_agree_at_every_scale(scale):
     """테스트가 코드와 **같은 산수**를 써야 한다. round(32 × 배율)로 어림하면

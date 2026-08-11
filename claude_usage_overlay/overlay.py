@@ -27,6 +27,7 @@ from .formatting import (
     RATE_LIMITED_TEXT,
     format_age,
     format_countdown,
+    format_ring_time,
 )
 from .models import HudState, Status
 from .winmetrics import dpi_scale, round_window_corners, work_area
@@ -80,6 +81,13 @@ MIN_RING_FONT_PX = 8   # 이 아래로는 줄이지 않는다. 넘치는 편이 
 
 # 갱신 지연 임계에 더하는 여유. 분 반올림 경계에서 깜빡이지 않게 한다.
 GAP_PADDING_SECONDS = 60
+
+# 드래그와 클릭을 가르는 이동량. **배율을 곱하지 않는다.**
+#
+# 그려지는 치수가 아니라 손떨림 허용치다. 150% PC에서 4.5px로 늘리면 그 PC의
+# 사용자만 클릭이 더 잘 먹는 것이 아니라, 정말 옮기려고 3px 끌었을 때 창이
+# 안 따라온다. 마우스가 보내는 픽셀은 배율과 무관하다.
+DRAG_THRESHOLD = 3
 
 # 앞에서부터 **설치돼 있는 것**을 쓴다. Segoe UI는 한글 글리프가 없어
 # 한글만 Tk가 고른 다른 글꼴로 그려지므로, 한글까지 한 글꼴로 덮는
@@ -179,6 +187,15 @@ def resized_position(
     return nx, ny
 
 
+def is_drag(dx: int, dy: int, threshold: int = DRAG_THRESHOLD) -> bool:
+    """누른 자리에서 이만큼 움직였으면 이동이다.
+
+    **축별 최댓값으로 본다.** 유클리드 거리로 재면 (3, 3)이 4.24가 되어 같은
+    3px 이동이 축에 따라 갈린다.
+    """
+    return max(abs(dx), abs(dy)) >= threshold
+
+
 def pick_font_family(root: tk.Misc, candidates=FONT_CANDIDATES) -> str:
     """후보 중 **실제로 설치된** 첫 글꼴 이름. 없으면 FALLBACK_FAMILY.
 
@@ -272,10 +289,15 @@ class Overlay:
         self._round_corners()
 
         # 드래그로 옮길 수 있지만 놓은 자리를 저장하지는 않는다.
-        self._drag = {"x": 0, "y": 0}
+        # 뗄 때(<ButtonRelease-1>)를 보는 이유는 클릭과 드래그를 가르기 위해서다.
+        self._drag = {"x": 0, "y": 0, "ox": 0, "oy": 0, "moved": False}
+        # 링 안에 사용량 대신 남은 시간을 그리는지. **저장하지 않는다** —
+        # 창 위치를 저장하지 않는 것과 같은 이유이고, 다시 켜면 사용량으로 돌아온다.
+        self._show_time = False
         for widget in (self._win, self._canvas):
             widget.bind("<Button-1>", self._on_press)
             widget.bind("<B1-Motion>", self._on_drag)
+            widget.bind("<ButtonRelease-1>", self._on_release)
 
         # 링 그림 캐시. PhotoImage는 참조가 끊기면 화면에서 사라진다.
         self._ring_key: tuple | None = None
@@ -414,11 +436,30 @@ class Overlay:
     def _on_press(self, event) -> None:
         self._drag["x"] = event.x_root - self._win.winfo_x()
         self._drag["y"] = event.y_root - self._win.winfo_y()
+        self._drag["ox"] = event.x_root
+        self._drag["oy"] = event.y_root
+        self._drag["moved"] = False
 
     def _on_drag(self, event) -> None:
+        if is_drag(event.x_root - self._drag["ox"], event.y_root - self._drag["oy"]):
+            self._drag["moved"] = True
+        if not self._drag["moved"]:
+            # 아직 클릭일 수 있다. 여기서 창을 움직이면 1px 흔들림에 창이 떨린다.
+            return
         self._win.geometry(
             f"+{event.x_root - self._drag['x']}+{event.y_root - self._drag['y']}"
         )
+
+    def _on_release(self, event) -> None:
+        """3px 안에서 뗐으면 클릭이다.
+
+        **자세히 모드에는 좌클릭 전환이 없다.** 아래 줄에 이미 카운트다운이 있어서
+        같은 값을 두 자리에 보이게 될 뿐이다.
+        """
+        if self._drag["moved"] or self._detailed:
+            return
+        self._show_time = not self._show_time
+        self._redraw()
 
     # --- 그리기 ----------------------------------------------------------
 
@@ -448,15 +489,18 @@ class Overlay:
             return
 
         snap = state.snapshot
-        pct = snap.five_hour_pct
         dim = state.status in DIM_STATUSES
-        color = theme.color_for(pct, self._config.warn_pct, self._config.danger_pct)
-        self._draw_ring(geo, pct, theme.RING_DIM if dim else color)
+        color = theme.color_for(
+            snap.five_hour_pct, self._config.warn_pct, self._config.danger_pct
+        )
+        self._draw_ring(geo, snap.five_hour_pct, theme.RING_DIM if dim else color)
+
+        if self._show_time:
+            text, start_px = format_ring_time(snap.resets_at, now), SMALL_FONT_TIME_PX
+        else:
+            text, start_px = str(int(round(snap.five_hour_pct))), SMALL_FONT_PCT_PX
         self._draw_ring_text(
-            geo,
-            str(int(round(pct))),
-            theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT,
-            SMALL_FONT_PCT_PX,
+            geo, text, theme.TEXT_DIM_RING if dim else theme.TEXT_LIGHT, start_px
         )
 
     # --- 자세히 모드 -----------------------------------------------------
