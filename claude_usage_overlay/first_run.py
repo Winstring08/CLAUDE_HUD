@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import theme
 from .config import Config, config_path, save_config
-from .winmetrics import dark_title_bar, dpi_scale
+from .winmetrics import center_window, dark_title_bar, dpi_scale
 
 TITLE = "Claude 사용량 — 처음 실행"
 
@@ -78,6 +78,8 @@ def show_intro(root: tk.Tk, config: Config, supported: bool) -> None:
     win.resizable(False, False)
     win.configure(bg=theme.BG)
     win.bind("<Escape>", lambda _e: win.destroy())
+    # 자리를 잡기 전에는 숨겨 둔다 (settings_window와 같은 이유).
+    win.withdraw()
 
     body = tk.Frame(win, bg=theme.BG)
     body.pack(fill="both", expand=True, padx=round(PAD * s), pady=round(PAD * s))
@@ -102,11 +104,14 @@ def show_intro(root: tk.Tk, config: Config, supported: bool) -> None:
     ).pack(anchor="e")
 
     win.update_idletasks()
-    win.geometry(f"{round(BASE_WIDTH * s)}x{win.winfo_reqheight()}")
+    # 자리를 안 정하면 Tk가 화면 왼쪽 위에 띄운다. 처음 켠 사람에게 가장 먼저
+    # 보이는 창이므로 눈이 가는 한가운데에 놓는다.
+    center_window(win, round(BASE_WIDTH * s), win.winfo_reqheight())
     try:
         dark_title_bar(int(win.wm_frame(), 16))
     except (tk.TclError, ValueError):
         pass
+    win.deiconify()
 
 
 def _draw_diagram(parent: tk.Misc, s: float) -> None:

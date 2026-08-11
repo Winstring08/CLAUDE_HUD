@@ -27,7 +27,7 @@ from .checkbox import Checkbox
 from .config import PCT_MAX, PCT_MIN, PCT_STEP, Config, save_config
 from .dropdown import POLL_CHOICES, Dropdown
 from .slider import Slider
-from .winmetrics import dark_title_bar, dpi_scale
+from .winmetrics import center_window, dark_title_bar, dpi_scale
 
 BASE_WIDTH = 300
 PAD = 16          # 창 안쪽 여백
@@ -118,6 +118,10 @@ class SettingsWindow:
         self._win.title("Claude 사용량 설정")
         self._win.resizable(False, False)
         self._win.configure(bg=theme.BG)
+        # 자리를 잡기 전에는 숨겨 둔다. 크기를 재려면 update_idletasks가 필요한데
+        # 그때 창이 Tk 기본 자리(화면 왼쪽 위)에 한 번 그려지고, 그 다음 가운데로
+        # 옮겨지면서 눈에 띄게 튄다.
+        self._win.withdraw()
         self._win.protocol("WM_DELETE_WINDOW", self.close)
         self._win.bind("<Escape>", lambda _e: self.close())
 
@@ -135,6 +139,8 @@ class SettingsWindow:
         self._build()
         self._size_to_content()
         self._darken_title_bar()
+        # 자리를 다 잡은 뒤에 보여준다.
+        self._win.deiconify()
 
     # --- 공개 인터페이스 -------------------------------------------------
 
@@ -219,9 +225,14 @@ class SettingsWindow:
         return max(base, widest + round((PAD * 2 + 40) * self._scale))
 
     def _size_to_content(self) -> None:
-        """높이는 내용에서 나온다. 상수로 박으면 문구가 한 줄 늘 때 잘린다."""
+        """높이는 내용에서 나온다. 상수로 박으면 문구가 한 줄 늘 때 잘린다.
+
+        자리도 여기서 정한다 — 안 정하면 Tk가 화면 왼쪽 위에 띄운다. 오버레이는
+        오른쪽 아래에 사는 반면 설정창은 잠깐 열었다 닫는 창이라, 눈이 이미 가
+        있는 화면 한가운데가 낫다.
+        """
         self._win.update_idletasks()
-        self._win.geometry(f"{self._width()}x{self._win.winfo_reqheight()}")
+        center_window(self._win, self._width(), self._win.winfo_reqheight())
 
     def _separator(self) -> None:
         tk.Frame(self._body, bg=theme.RING_TRACK, height=max(1, round(self._scale))).pack(

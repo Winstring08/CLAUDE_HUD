@@ -181,6 +181,71 @@ def work_area() -> tuple[int, int, int, int]:
     return (0, 0, width, height)
 
 
+def frame_size(hwnd: int) -> tuple[int, int] | None:
+    """제목 표시줄과 테두리까지 포함한 창의 실제 크기. 못 재면 None.
+
+    가운데에 놓으려면 이게 필요하다. Tk의 geometry는 **프레임 왼쪽 위**를 정하는데
+    거기 적는 크기는 내용 영역이라, 내용 크기로 가운데를 잡으면 프레임만큼
+    오른쪽 아래로 처진다 (실측: 400×300 창의 프레임이 416×339).
+
+    여백을 상수로 두지 않는다. 배율과 테마에 따라 달라진다.
+
+    **창이 숨어 있어도 잰다**(실측). 그래서 자리를 다 잡은 뒤에 보여줄 수 있다 —
+    Tk 쪽 계산(winfo_rootx - winfo_x)은 아직 배치되지 않은 창에서 엉뚱한 값을 준다.
+    """
+    try:
+        rect = wintypes.RECT()
+        if not ctypes.windll.user32.GetWindowRect(
+            wintypes.HWND(hwnd), ctypes.byref(rect)
+        ):
+            return None
+        return (rect.right - rect.left, rect.bottom - rect.top)
+    except (AttributeError, OSError, ValueError, TypeError):
+        return None
+
+
+def centered_position(
+    w: int, h: int, area: tuple[int, int, int, int]
+) -> tuple[int, int]:
+    """작업 영역 한가운데에 놓을 창의 왼쪽 위 좌표.
+
+    자리를 안 정하면 Tk가 기본값대로 화면 왼쪽 위에 띄운다.
+
+    화면이 아니라 **작업 영역** 기준이다 — 화면으로 잡으면 작업 표시줄 높이의
+    절반만큼 아래로 처진다. work_area()를 쓰는 다른 자리와 같은 이유다.
+
+    창이 작업 영역보다 크면 왼쪽 위 모서리에 맞춘다. 음수 좌표를 만들면 제목
+    표시줄이 화면 밖으로 나가 창을 옮길 수도 닫을 수도 없게 된다.
+    """
+    left, top, right, bottom = area
+    x = left + ((right - left) - w) // 2
+    y = top + ((bottom - top) - h) // 2
+    return (max(left, x), max(top, y))
+
+
+def center_window(win, width: int, height: int) -> None:
+    """내용 크기가 width × height인 창을 작업 영역 한가운데에 놓는다.
+
+    설정창과 안내창이 함께 쓴다. 자리를 안 정하면 Tk가 화면 왼쪽 위에 띄운다.
+
+    이 모듈의 다른 함수들과 달리 HWND가 아니라 Tk 창을 받는다. 크기를 먼저
+    적용해야 프레임을 잴 수 있어서 순서가 얽히는데, 그 순서를 부르는 쪽마다
+    베끼는 것보다 여기 한 번 적어두는 편이 낫다.
+
+    프레임 크기를 못 재면 내용 크기로 가늠한다 — 제목 표시줄 높이만큼 처질 뿐
+    여전히 화면 한가운데 근처이므로, 여기서 실패했다고 창을 안 띄울 이유는 없다.
+    """
+    win.update_idletasks()
+    win.geometry(f"{width}x{height}")
+    win.update_idletasks()
+    try:
+        outer = frame_size(int(win.wm_frame(), 16))
+    except Exception:   # 창 핸들이 아직 없거나(TclError) 형식이 다르다(ValueError)
+        outer = None
+    x, y = centered_position(*(outer or (width, height)), work_area())
+    win.geometry(f"{width}x{height}+{x}+{y}")
+
+
 def dpi_scale() -> float:
     try:
         dpi = int(ctypes.windll.user32.GetDpiForSystem())
