@@ -14,7 +14,7 @@ import threading
 import tkinter as tk
 
 from . import first_run, font_install, tray_promote
-from .config import load_config
+from .config import load_config, save_config
 from .credentials import CredentialStore
 from .overlay import Overlay
 from .poller import Poller
@@ -33,9 +33,8 @@ def main() -> None:
     # Tk는 시작할 때 글꼴 목록을 읽으므로, 나중에 올리면 이번 실행에서는 못 쓴다.
     font_install.activate()
 
-    # **첫 실행인지는 여기서 한 번만 판정한다.** 안내창이 config.json을 저장하고
-    # 아이콘 고정 스레드는 아이콘이 뜬 뒤에야 도는데, 둘이 각자 파일을 확인하면
-    # 안내창이 먼저 저장해 버려 자동 시도가 영영 돌지 않는다.
+    # **config.json을 만들기 전에 판정한다.** 아래에서 그 파일을 만들어 첫 실행
+    # 표시를 남기므로, 순서가 뒤집히면 자동 고정이 영영 돌지 않는다.
     first = first_run.is_first_run()
 
     config = load_config()
@@ -52,7 +51,11 @@ def main() -> None:
     threading.Thread(target=tray.run, daemon=True).start()
 
     if first:
-        first_run.show_intro(root, config, supported=tray_promote.is_supported())
+        # **첫 실행 표시를 남긴다.** 예전에는 안내창이 이 저장을 겸했는데 그 창을
+        # 없앴으므로(first_run 머리말) 여기서 직접 만든다. 이 파일이 있어야
+        # 다음 기동에서 first가 False가 되고 아래 자동 고정이 한 번만 돈다.
+        save_config(config)
+
         # **첫 실행 1회만 자동으로 써둔다.** 이후로는 건드리지 않는다 — 나중에
         # 직접 숨긴 사람과 싸우지 않기 위해서다.
         #

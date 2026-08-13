@@ -226,7 +226,7 @@ def centered_position(
 def center_window(win, width: int, height: int) -> None:
     """내용 크기가 width × height인 창을 작업 영역 한가운데에 놓는다.
 
-    설정창과 안내창이 함께 쓴다. 자리를 안 정하면 Tk가 화면 왼쪽 위에 띄운다.
+    설정창이 쓴다. 자리를 안 정하면 Tk가 화면 왼쪽 위에 띄운다.
 
     이 모듈의 다른 함수들과 달리 HWND가 아니라 Tk 창을 받는다. 크기를 먼저
     적용해야 프레임을 잴 수 있어서 순서가 얽히는데, 그 순서를 부르는 쪽마다
