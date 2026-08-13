@@ -77,23 +77,68 @@ def test_every_config_field_has_a_coercion_rule():
     assert set(Config.__dataclass_fields__) == set(config._TYPES)
 
 
-def test_manual_edits_survive_a_position_save(tmp_path):
-    """config는 기동 시 한 번만 읽는다. 저장할 때 전체를 쓰면 오버레이를 한 번
-    드래그하는 것만으로 사용자의 편집이 기동 시점 값으로 덮여 조용히 사라진다.
+def test_overlay_detailed_defaults_to_the_basic_mode(tmp_path):
+    """기본값이 false인 쪽이 기본 모드와 일치해서 파일을 열어본 사람이
+    헷갈리지 않는다 (스펙 9장)."""
+    assert load_config(tmp_path / "none.json").overlay_detailed is False
 
-    "설정 파일 열기"가 트레이 메뉴에 있는 이상 직접 편집은 지원 경로다.
-    """
+
+def test_overlay_detailed_only_accepts_a_real_bool(tmp_path):
     p = tmp_path / "config.json"
-    p.write_text(json.dumps({"poll_seconds": 900}), encoding="utf-8")
-    cfg = load_config(p)                                            # 기동
-    p.write_text(json.dumps({"poll_seconds": 1200, "warn_pct": 50}), encoding="utf-8")
-    cfg.overlay_visible = False                                     # 트레이 메뉴 조작
-    save_config(cfg, p)
+    p.write_text(json.dumps({"overlay_detailed": "true"}), encoding="utf-8")
+    assert load_config(p).overlay_detailed is False   # 버리고 기본값
 
-    after = load_config(p)
-    assert after.poll_seconds == 1200
-    assert after.warn_pct == 50
-    assert after.overlay_visible is False
+    p.write_text(json.dumps({"overlay_detailed": True}), encoding="utf-8")
+    assert load_config(p).overlay_detailed is True
+
+
+def test_save_writes_the_whole_file(tmp_path):
+    """이제 전부 GUI가 소유한다. 부분 병합이 없어졌으므로 디스크의 옛 키가
+    남아 있으면 안 된다 — 남으면 다음 판올림에서 사라진 필드가 되살아난다."""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"poll_seconds": 900, "옛날키": 1}), encoding="utf-8")
+    save_config(Config(poll_seconds=600), p)
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert set(written) == set(Config.__dataclass_fields__)
+    assert written["poll_seconds"] == 600
+
+
+def test_ui_owned_is_gone():
+    """부분 병합의 근거였던 '나머지는 메모장으로 고치는 값'이 사라졌다.
+    상수가 남아 있으면 다음 사람이 그 규칙이 아직 산다고 읽는다."""
+    assert not hasattr(config, "UI_OWNED")
+
+
+def test_warn_above_danger_is_corrected_on_load(tmp_path):
+    """warn ≥ danger면 노란색이 영영 안 나온다. 설정창에서만 고치면 창을 한 번도
+    안 연 사람은 그대로 남으므로 불러올 때 바로잡는다 (스펙 4.1절)."""
+    p = tmp_path / "config.json"
+    for warn, danger in ((95, 90), (90, 90), (100, 60)):
+        p.write_text(json.dumps({"warn_pct": warn, "danger_pct": danger}), encoding="utf-8")
+        cfg = load_config(p)
+        assert cfg.danger_pct == danger, "danger를 기준으로 두고 warn을 내린다"
+        assert cfg.warn_pct == danger - config.PCT_STEP
+
+
+def test_the_correction_never_pushes_warn_below_zero(tmp_path):
+    """손으로 danger=2를 적어둔 경우다. 음수 임계값을 만들면 안 된다."""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"warn_pct": 50, "danger_pct": 2}), encoding="utf-8")
+    assert load_config(p).warn_pct == 0
+
+
+def test_a_sane_pair_is_left_alone(tmp_path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"warn_pct": 60, "danger_pct": 80}), encoding="utf-8")
+    cfg = load_config(p)
+    assert (cfg.warn_pct, cfg.danger_pct) == (60, 80)
+
+
+def test_the_slider_gap_is_the_slider_step():
+    """5단위 스냅과 5%p 간격이 같은 값이어야 슬라이더가 자기 한계에 정확히 선다.
+    두 상수로 갈라두면 한쪽만 고쳐졌을 때 손잡이가 한 칸 못 가거나 넘어간다."""
+    assert config.PCT_STEP == 5
+    assert config.PCT_MIN < config.PCT_MAX
 
 
 def test_first_save_writes_every_field(tmp_path):

@@ -12,10 +12,16 @@ from pathlib import Path
 SM_CXSMICON = 49
 SPI_GETWORKAREA = 0x0030
 
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+
 DEFAULT_ICON_SIZE = 16
 
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_ROUND = 2   # 큰 반경. 3(ROUNDSMALL)은 눈에 띄지 않을 만큼 작다
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 
 
 def enable_dpi_awareness() -> None:
@@ -59,6 +65,59 @@ def round_window_corners(hwnd: int) -> bool:
         rc = ctypes.windll.dwmapi.DwmSetWindowAttribute(
             wintypes.HWND(hwnd),
             ctypes.c_uint(DWMWA_WINDOW_CORNER_PREFERENCE),
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+        )
+        return rc == 0
+    except (AttributeError, OSError, ValueError, TypeError):
+        return False
+
+
+def keep_on_top(hwnd: int) -> bool:
+    """창을 항상 위 무리의 **맨 위로** 다시 올린다. 성공하면 True.
+
+    `attributes("-topmost", True)`만으로는 모자란다. 그 속성은 우리 조작으로는
+    풀리지 않지만(실측: 숨김·다시 보임·크기 변경·설정창 열고 닫기 모두 유지),
+    **나중에 만들어진 다른 항상 위 창이 우리 위에 얹힌다.** 항상 위끼리는 나중에
+    올라온 쪽이 이기기 때문이다. 그래서 "어느새 뒤로 가 있다"가 된다.
+
+    Tk에 같은 값을 다시 넣는 것으로는 안 된다 — 값이 안 바뀌면 아무것도 하지
+    않는다. 그래서 SetWindowPos를 직접 부른다.
+
+    **SWP_NOACTIVATE가 핵심이다.** 이게 없으면 1초마다 포커스를 빼앗아 다른
+    창에서 타자를 칠 수 없게 된다. 위치와 크기도 건드리지 않으므로(NOMOVE·NOSIZE)
+    드래그 중에 불려도 창이 튀지 않는다.
+    """
+    try:
+        return bool(
+            ctypes.windll.user32.SetWindowPos(
+                wintypes.HWND(hwnd),
+                wintypes.HWND(HWND_TOPMOST),
+                0, 0, 0, 0,
+                ctypes.c_uint(SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
+            )
+        )
+    except (AttributeError, OSError, ValueError, TypeError):
+        return False
+
+
+def dark_title_bar(hwnd: int) -> bool:
+    """네이티브 창의 제목 표시줄만 어둡게 만든다. 성공하면 True.
+
+    **무테두리로 직접 그릴 필요가 없다.** 이 속성 하나로 제목 표시줄이 어두워지고
+    창 이동·Alt+Tab·스냅·작업 표시줄은 전부 정상으로 남는다 (실측: rc=0, 대조군
+    창과 나란히 띄워 육안 확인).
+
+    round_window_corners와 같은 API다. 함수가 하나 늘 뿐이다.
+
+    Windows 10 초기 판올림에는 이 속성이 없어 실패한다. 그때는 제목 표시줄만
+    밝은 채로 뜬다 — 보기 나쁠 뿐 동작에는 지장이 없으므로 조용히 넘어간다.
+    """
+    try:
+        value = ctypes.c_int(1)
+        rc = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd),
+            ctypes.c_uint(DWMWA_USE_IMMERSIVE_DARK_MODE),
             ctypes.byref(value),
             ctypes.sizeof(value),
         )
@@ -120,6 +179,71 @@ def work_area() -> tuple[int, int, int, int]:
     width = _metric(0) or 1920    # SM_CXSCREEN
     height = _metric(1) or 1080   # SM_CYSCREEN
     return (0, 0, width, height)
+
+
+def frame_size(hwnd: int) -> tuple[int, int] | None:
+    """제목 표시줄과 테두리까지 포함한 창의 실제 크기. 못 재면 None.
+
+    가운데에 놓으려면 이게 필요하다. Tk의 geometry는 **프레임 왼쪽 위**를 정하는데
+    거기 적는 크기는 내용 영역이라, 내용 크기로 가운데를 잡으면 프레임만큼
+    오른쪽 아래로 처진다 (실측: 400×300 창의 프레임이 416×339).
+
+    여백을 상수로 두지 않는다. 배율과 테마에 따라 달라진다.
+
+    **창이 숨어 있어도 잰다**(실측). 그래서 자리를 다 잡은 뒤에 보여줄 수 있다 —
+    Tk 쪽 계산(winfo_rootx - winfo_x)은 아직 배치되지 않은 창에서 엉뚱한 값을 준다.
+    """
+    try:
+        rect = wintypes.RECT()
+        if not ctypes.windll.user32.GetWindowRect(
+            wintypes.HWND(hwnd), ctypes.byref(rect)
+        ):
+            return None
+        return (rect.right - rect.left, rect.bottom - rect.top)
+    except (AttributeError, OSError, ValueError, TypeError):
+        return None
+
+
+def centered_position(
+    w: int, h: int, area: tuple[int, int, int, int]
+) -> tuple[int, int]:
+    """작업 영역 한가운데에 놓을 창의 왼쪽 위 좌표.
+
+    자리를 안 정하면 Tk가 기본값대로 화면 왼쪽 위에 띄운다.
+
+    화면이 아니라 **작업 영역** 기준이다 — 화면으로 잡으면 작업 표시줄 높이의
+    절반만큼 아래로 처진다. work_area()를 쓰는 다른 자리와 같은 이유다.
+
+    창이 작업 영역보다 크면 왼쪽 위 모서리에 맞춘다. 음수 좌표를 만들면 제목
+    표시줄이 화면 밖으로 나가 창을 옮길 수도 닫을 수도 없게 된다.
+    """
+    left, top, right, bottom = area
+    x = left + ((right - left) - w) // 2
+    y = top + ((bottom - top) - h) // 2
+    return (max(left, x), max(top, y))
+
+
+def center_window(win, width: int, height: int) -> None:
+    """내용 크기가 width × height인 창을 작업 영역 한가운데에 놓는다.
+
+    설정창과 안내창이 함께 쓴다. 자리를 안 정하면 Tk가 화면 왼쪽 위에 띄운다.
+
+    이 모듈의 다른 함수들과 달리 HWND가 아니라 Tk 창을 받는다. 크기를 먼저
+    적용해야 프레임을 잴 수 있어서 순서가 얽히는데, 그 순서를 부르는 쪽마다
+    베끼는 것보다 여기 한 번 적어두는 편이 낫다.
+
+    프레임 크기를 못 재면 내용 크기로 가늠한다 — 제목 표시줄 높이만큼 처질 뿐
+    여전히 화면 한가운데 근처이므로, 여기서 실패했다고 창을 안 띄울 이유는 없다.
+    """
+    win.update_idletasks()
+    win.geometry(f"{width}x{height}")
+    win.update_idletasks()
+    try:
+        outer = frame_size(int(win.wm_frame(), 16))
+    except Exception:   # 창 핸들이 아직 없거나(TclError) 형식이 다르다(ValueError)
+        outer = None
+    x, y = centered_position(*(outer or (width, height)), work_area())
+    win.geometry(f"{width}x{height}+{x}+{y}")
 
 
 def dpi_scale() -> float:

@@ -7,9 +7,13 @@
 **RELOGIN 문구는 리터럴로 베끼지 않고 credentials에서 가져온다.** 손으로
 베끼면 문구가 바뀌었을 때 테스트만 옛날 것을 재고, 정작 화면에 가는
 문자열은 아무도 안 잰다.
+
+**LINE1·LINE2와 창 폭 190px은 자세히 모드 근거다.**
+
+Tk 루트는 conftest.py의 세션 픽스처를 쓴다 — 모듈마다 만들면 두 번째 것이
+이 환경에서 죽는다 (그쪽 머리말에 실측이 있다).
 """
 
-import tkinter as tk
 import tkinter.font as tkfont
 
 import pytest
@@ -45,14 +49,6 @@ LINE2 = RELOGIN_TAILS + [
     "23시간 전 갱신",
     "방금 갱신됨",
 ]
-
-
-@pytest.fixture(scope="module")
-def root():
-    r = tk.Tk()
-    r.withdraw()
-    yield r
-    r.destroy()
 
 
 def _fits(root, px, text):
@@ -122,6 +118,36 @@ def test_ring_number_fits_inside_the_ring(root):
             font = tkfont.Font(root=root, family=family, size=-px, weight="bold")
         assert font.measure(text) <= inner - ov.PCT_INNER_MARGIN * 2, text
         assert px >= 12, f"{text!r}가 {px}px까지 줄었다 — 링이 너무 작다"
+
+
+def test_ring_number_fits_in_the_basic_mode_ring(root):
+    """기본 모드는 링 안쪽이 40px이라 사용량을 18px로, 남은 시간을 15px로 시작한다.
+
+    배율 셋과 글꼴 둘을 모두 재는 이유는 스펙 2.5절의 실측 때문이다 — 125%의
+    `5:20`은 42px, 150%의 `100`은 49px로 가용폭을 넘는다. 줄이는 루프를 거친
+    뒤의 크기를 잰다.
+    """
+    families = {ov.pick_font_family(root), ov.FALLBACK_FAMILY}
+    cases = (
+        ("62", ov.SMALL_FONT_PCT_PX),
+        ("100", ov.SMALL_FONT_PCT_PX),
+        ("5:20", ov.SMALL_FONT_TIME_PX),
+        ("0:27", ov.SMALL_FONT_TIME_PX),
+        ("10:14", ov.SMALL_FONT_TIME_PX),
+    )
+    for scale in (1.0, 1.25, 1.5):
+        limit = ov.ring_text_limit(ov.SMALL_RING_BOX, ov.SMALL_RING_WIDTH, scale)
+        for text, start in cases:
+            for family in families:
+                px = round(start * scale)
+                font = tkfont.Font(root=root, family=family, size=-px, weight="bold")
+                while px > ov.MIN_RING_FONT_PX and font.measure(text) > limit:
+                    px -= 1
+                    font = tkfont.Font(root=root, family=family, size=-px, weight="bold")
+                assert font.measure(text) <= limit, (text, family, scale)
+                assert px > ov.MIN_RING_FONT_PX, (
+                    f"{text!r}가 바닥({px}px)까지 줄었다 — 링이 너무 작다"
+                )
 
 
 def test_font_sizes_are_pixels_not_points():
