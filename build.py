@@ -13,6 +13,24 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def use_utf8_output(*streams) -> None:
+    """이 스크립트가 내는 한국어 문구를 콘솔 인코딩과 무관하게 만든다.
+
+    GitHub Actions의 windows 러너는 stdout이 **cp1252**다. 거기서 "아이콘: …"을
+    print하면 `UnicodeEncodeError`로 빌드가 통째로 죽는다 — 첫 릴리스 시도가
+    실제로 여기서 멈췄다. 개발 PC는 cp949라 한글이 그냥 나가고, 그래서 이 축은
+    개발 PC에서 아무리 돌려도 드러나지 않는다.
+
+    워크플로에 `PYTHONIOENCODING`을 거는 대신 스크립트가 자기 출력을 책임진다.
+    환경변수는 그 워크플로에서만 참이라, 손으로 `python build.py`를 돌리는 다른
+    기계는 안 덮는다.
+    """
+    for stream in streams:
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 ROOT = Path(__file__).resolve().parent
 NAME = "ClaudeUsageOverlay"
 ICON = ROOT / "build" / "app.ico"
@@ -153,4 +171,5 @@ def build() -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output(sys.stdout, sys.stderr)
     raise SystemExit(build())
