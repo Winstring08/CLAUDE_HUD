@@ -1,0 +1,65 @@
+name: 릴리스
+
+on:
+  push:
+    tags: ['v*']
+
+# gh release create가 릴리스를 만들려면 쓰기 권한이 필요하다.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 의존성 설치
+        run: pip install -r requirements-build.txt
+
+      # 여기서 멈추면 릴리스는 만들어지지 않는다. 순서가 곧 안전장치다.
+      - name: 태그와 version.py 대조
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          SRC=$(python -c "from claude_usage_overlay.version import __version__; print(__version__)")
+          echo "태그 $TAG / 소스 $SRC"
+          if [ "$TAG" != "$SRC" ]; then
+            echo "::error::태그($TAG)와 version.py($SRC)가 다르다"
+            exit 1
+          fi
+
+      - name: pytest
+        run: python -m pytest -v
+
+      - name: 빌드
+        run: python build.py
+
+      # sha256sum 대신 PowerShell을 쓴다 — 러너에 coreutils가 있는지에 기대지
+      # 않는다. 출력 형식은 sha256sum과 같게 맞춰, 받는 쪽이 흔한 도구로 대조할
+      # 수 있게 한다.
+      - name: SHA-256
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash dist\ClaudeUsageOverlay.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  ClaudeUsageOverlay.exe" | Out-File -Encoding ascii dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      # 초안으로 만든다. 사람이 노트를 다듬고 게시할 때까지 아무에게도 알림이
+      # 가지 않는다. 서드파티 액션을 쓰지 않는 이유는 그것이 태그가 조용히
+      # 옮겨질 수 있는 공급망 표면이기 때문이다 — gh는 러너에 이미 있다.
+      - name: 초안 릴리스 생성
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --notes "노트를 채우고 게시한다." \
+            dist/ClaudeUsageOverlay.exe \
+            dist/SHA256SUMS.txt

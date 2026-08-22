@@ -71,7 +71,7 @@ def test_dark_title_bar_succeeds_on_this_windows(root):
 
 
 def test_a_window_is_centered_in_the_work_area():
-    """설정창·안내창은 자리를 안 정하면 Tk 기본값대로 화면 왼쪽 위에 뜬다."""
+    """설정창은 자리를 안 정하면 Tk 기본값대로 화면 왼쪽 위에 뜬다."""
     from claude_usage_overlay.winmetrics import centered_position
 
     assert centered_position(400, 300, (0, 0, 1920, 1040)) == (760, 370)

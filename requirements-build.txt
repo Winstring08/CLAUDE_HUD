@@ -1,0 +1,5 @@
+# CI가 설치하는 판. 손으로 올리고 커밋에 남긴다.
+pystray==0.19.5
+pillow==12.3.0
+pyinstaller==6.22.0
+pytest==9.1.1
