@@ -10,6 +10,7 @@ from .config import Config
 from .formatting import LOADING_TEXT, format_age, format_countdown
 from .icon_render import render_icon
 from .models import HudState, Status
+from .version import __version__
 from .winmetrics import system_icon_size
 
 
@@ -22,6 +23,9 @@ STALE_STATUSES = frozenset({Status.STALE, Status.RATE_LIMITED})
 # 없어 원인도 안 남는다. 문구는 우리가 고정 상수로 통제하지만(credentials가
 # 예외 텍스트를 붙이지 않는다), 마지막 방어를 여기 둔다.
 TOOLTIP_LIMIT = 128
+
+# 트레이 메뉴 맨 위에 그리는 판 번호. 누를 수 없는 항목이다.
+VERSION_LABEL = f"버전 {__version__}"
 
 
 def _clip(text: str) -> str:
@@ -140,6 +144,8 @@ class Tray:
         본문을 통째로 훑어 그 문자열이 없는지 보기 때문이다.)
         """
         return pystray.Menu(
+            pystray.MenuItem(VERSION_LABEL, None, enabled=False),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem(
                 lambda _: "오버레이 숨기기" if self._overlay.is_visible() else "오버레이 보이기",
                 self._toggle_overlay,

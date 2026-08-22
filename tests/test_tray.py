@@ -142,3 +142,27 @@ def test_the_menu_has_no_config_file_item():
     assert "설정 파일 열기" not in source
     assert "notepad" not in source
     assert "Pretendard 글꼴 설치" not in source
+
+
+def test_the_menu_starts_with_a_disabled_version_item():
+    """버그 제보를 받을 때 판 번호를 물어볼 유일한 수단이다.
+
+    누를 수 있으면 안 된다 — 눌러도 아무 일이 없는 항목은 고장으로 읽힌다.
+    """
+    import types
+
+    import claude_usage_overlay.tray as tray_mod
+    from claude_usage_overlay.version import __version__
+
+    stub = types.SimpleNamespace(
+        _overlay=types.SimpleNamespace(is_visible=lambda: True),
+        _toggle_overlay=lambda *a: None,
+        _refresh_now=lambda *a: None,
+        _open_settings=lambda *a: None,
+        _toggle_autostart=lambda *a: None,
+        _quit=lambda *a: None,
+    )
+    first = list(tray_mod.Tray._build_menu(stub))[0]
+
+    assert __version__ in first.text
+    assert not first.enabled

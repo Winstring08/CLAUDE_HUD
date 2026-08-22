@@ -1,11 +1,18 @@
 [project]
 name = "claude-usage-overlay"
-version = "0.1.0"
+dynamic = ["version"]
 requires-python = ">=3.12"
 dependencies = ["pystray>=0.19", "pillow>=10.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "claude_usage_overlay.version.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
