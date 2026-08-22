@@ -289,9 +289,12 @@ README에 이미 명시돼 있어 손댈 곳이 없다.
    `tk.Tk()`를 만든다. 안 되면 362개 중 Tk를 쓰는 것들이 통째로 ERROR가 된다.
    §6의 ci.yml을 먼저 올려 태그 없이 확인한다. 만약 안 되면 그때 대안(가상
    디스플레이 또는 Tk 테스트 분리)을 정한다 — 이 문서는 그 대안을 미리 고르지 않는다
-2. **`--version-file`에 한글이 들어가도 되는가.** CompanyName이 `권승현`이다.
-   PyInstaller가 그 파일을 UTF-8로 읽는지, 리소스에 제대로 박히는지 빌드해서
-   속성 창으로 확인한다. 안 되면 로마자로 적는다
+2. **`--version-file`의 한글이 exe 리소스까지 살아서 가는가.** CompanyName이
+   `권승현`이다. **파일 단계까지는 확인했다** — PyInstaller의 `VSVersionInfo`로
+   `권승현`·`Claude 사용량 오버레이`를 UTF-8로 쓰고
+   `load_version_info_from_text_file()`로 다시 읽어 같은 문자열을 얻었다.
+   남은 것은 **빌드된 exe 안**이다. `read_version_info_from_executable()`과 탐색기
+   속성 창으로 확인한다. 깨지면 로마자로 적는다
 3. **CI에서 난 exe가 실제로 뜨는가.** 빌드가 exit 0이라고 실행되는 것은 아니다.
    첫 릴리스 초안의 exe를 내려받아 한 번 띄워 본다. 이걸 안 하면 "빌드는 됐는데
    실행하면 죽는 exe"를 게시하게 된다
