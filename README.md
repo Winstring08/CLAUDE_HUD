@@ -2,28 +2,48 @@
 
 Claude 사용량(5시간 창)을 Windows 화면에 항상 띄우는 상주 프로그램.
 
-## 필요 조건
+## 받기
 
-- Windows, Python 3.12
-- 터미널에서 `claude auth login`이 완료된 상태
+[Releases](https://github.com/Winstring08/CLAUDE_HUD/releases)에서
+`ClaudeUsageOverlay.exe` 하나만 내려받으면 된다. 파이썬도 의존성도 설치 과정도
+없다 — 아무 폴더에 두고 실행한다.
 
-## 설치
+필요한 것은 둘이다.
+
+- **Windows.** 트레이 아이콘 고정은 Windows 11에서만 동작하고, 나머지는 10에서도 된다
+- **터미널에서 `claude auth login`이 끝나 있을 것.** 안 돼 있으면 프로그램이 떠도
+  숫자를 하나도 못 보여준다
+
+### "Windows가 PC를 보호했습니다"가 뜨면
+
+**추가 정보 → 실행**을 누른다.
+
+이 프로그램에는 코드 서명 인증서가 없어서 SmartScreen이 처음 보는 파일로
+취급한다. 인증서는 해마다 돈이 나가는 물건이라 개인이 만든 도구에는 붙이지 않는
+것이 보통이다. 경고가 뜨는 것 자체는 파일에 문제가 있다는 뜻이 아니다.
+
+받은 파일이 릴리스에 올라온 그 파일이 맞는지는 해시로 대조한다.
+
+```
+certutil -hashfile ClaudeUsageOverlay.exe SHA256
+```
+
+나온 값이 그 릴리스의 `SHA256SUMS.txt`에 적힌 값과 같아야 한다.
+
+## 소스로 돌리기
 
 ```bash
 pip install pystray pillow
-```
-
-## 실행
-
-```bash
 python -m claude_usage_overlay
 ```
 
-트레이 메뉴의 "시작할 때 자동 실행"을 켜면 로그인 시 자동으로 뜬다.
+트레이 메뉴의 "시작할 때 자동 실행"을 켜면 로그인 시 자동으로 뜬다. exe로 돌릴
+때도 그대로 동작한다 — 레지스트리에는 파이썬 명령 대신 exe 경로가 들어간다.
 
-## 실행 파일 만들기
+## 직접 빌드하기
 
-파이썬이 깔려 있지 않은 PC에서도 쓰려면 exe 하나로 묶는다.
+릴리스의 exe를 그냥 쓰면 되므로 대부분은 이 절이 필요 없다. 소스를 고쳐서 자기
+exe를 내려는 경우다.
 
 ```bash
 pip install pyinstaller
@@ -32,9 +52,6 @@ python build.py
 
 `dist\ClaudeUsageOverlay.exe`가 나온다(약 21MB). 파이썬도 의존성도 필요 없고,
 그 파일 하나만 복사하면 된다. 설정과 자격증명은 소스로 돌릴 때와 같은 곳을 쓴다.
-
-exe로 돌릴 때도 "시작할 때 자동 실행"이 그대로 동작한다 — 레지스트리에는
-파이썬 명령 대신 exe 경로가 들어간다.
 
 작업 관리자에 프로세스가 둘로 보이는 것은 정상이다. 단일 파일 exe는 자기 자신을
 임시 폴더에 풀고 그 안에서 앱을 띄우는 구조라 부트로더 프로세스가 하나 더 뜬다.
@@ -136,3 +153,10 @@ refreshToken은 갱신할 때마다 회전하는 값이라 조심스럽게 다�
 pip install pytest
 python -m pytest -v
 ```
+
+## 라이선스
+
+MIT. [`LICENSE`](LICENSE)에 전문이 있다.
+
+화면 문구에 쓰는 **Pretendard**는 SIL OFL 1.1이고 별개다. 글꼴 파일과 함께
+`claude_usage_overlay/fonts/OFL.txt`가 exe 안에 들어간다.
