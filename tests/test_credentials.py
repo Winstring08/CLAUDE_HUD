@@ -130,6 +130,48 @@ def test_expired_refresh_token_asks_for_relogin(tmp_path):
     assert "claude auth login" in str(exc.value)
 
 
+def test_live_access_token_survives_a_dead_refresh_token(tmp_path):
+    """refreshToken만 만료: accessToken이 살아 있으면 그걸로 계속 보여준다.
+
+    실측으로 나온 파일이다 — accessToken 5시간 26분 남음, refreshToken 21분
+    지남. 이 상태에서 사용량 조회는 200으로 됐는데 화면에는 "재로그인 필요"만
+    떴다. refreshToken 만료를 먼저 검사한 탓이다.
+    """
+    p = tmp_path / ".credentials.json"
+    write_creds(p, expires_at=NOW_MS + 5 * HOUR_MS, refresh_expires_at=NOW_MS - 1000)
+    before = p.read_bytes()
+
+    store = CredentialStore(path=p, now_ms=lambda: NOW_MS, request_fn=_explode)
+
+    assert store.get_access_token() == "acc-old"
+    assert p.read_bytes() == before
+
+
+def test_dying_access_token_is_used_until_it_actually_expires(tmp_path):
+    """갱신 마진 안이라도 마찬가지다.
+
+    갱신할 길이 없는 상태에서 만료 30분 전이 됐다고 화면을 끄면, 아직 쓸 수
+    있는 30분을 그냥 버리는 것이다. _refresh가 네트워크 실패에서 살아 있는
+    토큰을 지키는 것과 같은 판단을 여기서도 한다.
+    """
+    p = tmp_path / ".credentials.json"
+    write_creds(p, expires_at=NOW_MS + 60_000, refresh_expires_at=NOW_MS - 1000)
+    store = CredentialStore(path=p, now_ms=lambda: NOW_MS, request_fn=_explode)
+
+    assert store.get_access_token() == "acc-old"
+
+
+def test_relogin_when_both_are_gone_even_by_a_second(tmp_path):
+    """accessToken이 만료되는 순간부터는 재로그인이 맞다."""
+    p = tmp_path / ".credentials.json"
+    write_creds(p, expires_at=NOW_MS, refresh_expires_at=NOW_MS - 1000)
+    store = CredentialStore(path=p, now_ms=lambda: NOW_MS, request_fn=_explode)
+
+    with pytest.raises(ReloginRequired) as exc:
+        store.get_access_token()
+    assert "claude auth login" in str(exc.value)
+
+
 def test_missing_file_asks_for_relogin(tmp_path):
     store = CredentialStore(path=tmp_path / "nope.json", now_ms=lambda: NOW_MS)
     with pytest.raises(ReloginRequired) as exc:
@@ -184,16 +226,39 @@ def test_unreadable_expiry_does_not_look_like_a_network_failure(tmp_path):
 
     그게 새어 나가면 폴러의 except Exception이 받아 "N분째 갱신 실패"를 띄운다.
     파일 형식이 바뀐 것인데 화면은 인터넷 문제라고 말하게 된다.
+
+    두 필드를 읽는 시점이 다르다. expiresAt은 매번 맨 먼저 읽고,
+    refreshTokenExpiresAt은 갱신이 필요해졌을 때만 읽는다 — 살아 있는
+    accessToken을 먼저 돌려주기 때문이다. 어느 쪽이든 읽는 순간
+    ReloginRequired로 바뀌어야 한다.
     """
     p = tmp_path / ".credentials.json"
     for broken in ("2026-08-10T20:22:39Z", [], {"ms": 1}):
-        for field in ("expiresAt", "refreshTokenExpiresAt"):
-            creds = {"accessToken": "acc", "expiresAt": NOW_MS + HOUR_MS}
-            creds[field] = broken
-            p.write_text(json.dumps({"claudeAiOauth": creds}), encoding="utf-8")
-            store = CredentialStore(path=p, now_ms=lambda: NOW_MS)
-            with pytest.raises(ReloginRequired):
-                store.get_access_token()
+        # expiresAt이 깨졌으면 즉시 걸린다.
+        p.write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "acc", "expiresAt": broken}}),
+            encoding="utf-8",
+        )
+        store = CredentialStore(path=p, now_ms=lambda: NOW_MS)
+        with pytest.raises(ReloginRequired):
+            store.get_access_token()
+
+        # refreshTokenExpiresAt은 갱신이 필요해진 뒤에 걸린다.
+        p.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "acc",
+                        "expiresAt": NOW_MS - 1000,
+                        "refreshTokenExpiresAt": broken,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        store = CredentialStore(path=p, now_ms=lambda: NOW_MS, request_fn=_explode)
+        with pytest.raises(ReloginRequired):
+            store.get_access_token()
 
 
 def test_missing_expiry_is_treated_as_expired(tmp_path):

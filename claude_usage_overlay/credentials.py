@@ -112,18 +112,29 @@ class CredentialStore:
 
         호출할 때마다 파일을 다시 읽는다. 캐시하면 다른 프로세스가 갱신한
         새 토큰을 놓친다.
+
+        **살아 있는 accessToken을 먼저 본다.** 두 유효기간은 따로 논다 —
+        refreshTokenExpiresAt이 expiresAt보다 먼저 지난 파일이 실제로 나온다
+        (실측: accessToken 5시간 26분 남음 · refreshToken 21분 지남). 갱신
+        가능 여부를 먼저 물으면 그런 파일에서 아직 몇 시간 쓸 수 있는 토큰을
+        써 보지도 않고 재로그인을 요구하게 된다 — 그 자리에서 사용량 조회는
+        200으로 멀쩡히 됐는데 화면에는 "재로그인 필요"만 떴다.
         """
         creds = self._read()
         now = self._now_ms()
 
-        refresh_expires_at = self._expiry_ms(creds.get("refreshTokenExpiresAt"))
-        if refresh_expires_at is not None and refresh_expires_at <= now:
-            # 여기서 갱신은 무의미하다. 사용자가 다시 로그인해야 한다.
-            raise ReloginRequired(RELOGIN_MSG)
-
         expires_at = self._expiry_ms(creds.get("expiresAt"))
         if expires_at is not None and expires_at - now > REFRESH_MARGIN_MS:
             return creds["accessToken"]
+
+        refresh_expires_at = self._expiry_ms(creds.get("refreshTokenExpiresAt"))
+        if refresh_expires_at is not None and refresh_expires_at <= now:
+            # 갱신은 무의미하다. 다만 아직 살아 있는 토큰까지 버리지는 않는다 —
+            # _refresh가 네트워크 실패에서 내리는 것과 같은 판단이다. 재로그인은
+            # 정말로 보여줄 것이 없어지는 순간부터 요구한다.
+            if expires_at is not None and expires_at > now:
+                return creds["accessToken"]
+            raise ReloginRequired(RELOGIN_MSG)
 
         return self._refresh(now)
 
